@@ -102,37 +102,117 @@ func TestActivitiesSkipsNumericIDEntries(t *testing.T) {
 	}
 }
 
+type searchBody struct {
+	SearchRequest struct {
+		Filters map[string]any `json:"filters"`
+		Cursor  string         `json:"cursor"`
+	} `json:"search_request"`
+}
+
 func TestSearchRequest(t *testing.T) {
 	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			SearchRequest struct {
-				Filters map[string]any `json:"filters"`
-			} `json:"search_request"`
-		}
+		var body searchBody
 		json.NewDecoder(r.Body).Decode(&body)
+
 		f := body.SearchRequest.Filters
 		if tags, _ := f["tag"].([]any); len(tags) != 1 || tags[0] != "1145" {
 			t.Errorf("tag = %v", f["tag"])
 		}
+
 		if f["date"] != "2026-10-22" {
 			t.Errorf("date = %v", f["date"])
 		}
+
 		bounds, _ := f["map_bounds"].(string)
 		if !strings.HasPrefix(bounds, "139.") || strings.Count(bounds, ",") != 3 {
 			t.Errorf("map_bounds = %q", bounds)
 		}
-		io.WriteString(w, `{"nested_search":{"venues":[{"id":1,"name":"V","tz":"Asia/Tokyo","activities":null,
+
+		if body.SearchRequest.Cursor != "page2" {
+			t.Errorf("cursor = %q", body.SearchRequest.Cursor)
+		}
+
+		io.WriteString(w, `{"nested_search":{"cursor":"page3","venues":[{"id":1,"name":"V","tz":"Asia/Tokyo","activities":null,
 			"classes":[{"id":2,"name":"C","schedules":[{"id":3,"starttime":1792630800,"endtime":1792636800,
 			"duration_minutes":100,"availability":{"credits":23,"status":"available"}}]}]}]}}`)
 	})
-	venues, err := c.Search(context.Background(), SearchFilters{
+
+	page, err := c.Search(context.Background(), SearchFilters{
 		Lat: 35.64, Lon: 139.66, RadiusKm: 1, Date: "2026-10-22",
-		Activity: Activity{ID: "1145", Name: "Massage"},
-	})
+		Activity: &Activity{ID: "1145", Name: "Massage"},
+	}, "page2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(venues) != 1 || venues[0].Classes[0].Schedules[0].Availability.Credits != 23 {
-		t.Errorf("venues = %+v", venues)
+
+	if page.Cursor != "page3" || len(page.Venues) != 1 || page.Venues[0].Classes[0].Schedules[0].Availability.Credits != 23 {
+		t.Errorf("page = %+v", page)
+	}
+}
+
+func TestSearchBrowseOmitsTag(t *testing.T) {
+	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
+		var body searchBody
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if _, ok := body.SearchRequest.Filters["tag"]; ok {
+			t.Error("browse search sent a tag")
+		}
+
+		if _, ok := body.SearchRequest.Filters["full_text_search"]; ok {
+			t.Error("browse search sent full_text_search")
+		}
+
+		io.WriteString(w, `{"nested_search":{"venues":[]}}`)
+	})
+
+	if _, err := c.Search(context.Background(), SearchFilters{Lat: 35.64, Lon: 139.66, RadiusKm: 3, Date: "2026-10-22"}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVenueOfferingsDedupes(t *testing.T) {
+	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"section_list":[
+			{"class_list":[{"id":1,"name":"A","schedule_credits_from":34}]},
+			{"class_list":[{"id":1,"name":"A"},{"id":2,"name":"B","schedule_credits_from":null}]}]}`)
+	})
+
+	got, err := c.VenueOfferings(context.Background(), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 2 || got[0].ID != 1 || *got[0].CreditsFrom != 34 || got[1].CreditsFrom != nil {
+		t.Errorf("offerings = %+v", got)
+	}
+}
+
+func TestVenueDetailFlattensSections(t *testing.T) {
+	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"items":[
+			{"key":"header","header":{"title":"B+TREE","tags":["Massage"," Facial"],"location":"Sangenjaya"}},
+			{"key":"summary","summary":{"summary":"About text"}},
+			{"key":"how_to_get_there","text_block":{"body":"Directions"}}]}`)
+	})
+
+	v, err := c.VenueDetail(context.Background(), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if v.Name != "B+TREE" || v.Subtitle != "Sangenjaya" || v.About != "About text" || v.HowToGetThere != "Directions" ||
+		len(v.Tags) != 2 || v.Tags[1] != "Facial" {
+		t.Errorf("venue = %+v", v)
+	}
+}
+
+func TestReserveRejectsNonZeroState(t *testing.T) {
+	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"state":3}`)
+	})
+
+	if _, err := c.Reserve(context.Background(), 42, 23); err == nil {
+		t.Fatal("expected error")
 	}
 }

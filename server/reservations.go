@@ -8,7 +8,7 @@ import (
 
 type reservation struct {
 	ReservationID int64  `json:"reservation_id"`
-	ScheduleID    int64  `json:"schedule_id"`
+	SlotID        int64  `json:"slot_id"`
 	ClassName     string `json:"class_name"`
 	VenueID       int64  `json:"venue_id"`
 	VenueName     string `json:"venue_name"`
@@ -23,7 +23,7 @@ type reservationsOutput struct {
 	Reservations []reservation `json:"reservations"`
 }
 
-func (h *handlers) reservations(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, reservationsOutput, error) {
+func (h *handlers) listReservations(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, reservationsOutput, error) {
 	bookings, err := h.cp.UpcomingBookings(ctx)
 	if err != nil {
 		return nil, reservationsOutput{}, err
@@ -35,7 +35,7 @@ func (h *handlers) reservations(ctx context.Context, _ *mcp.CallToolRequest, _ s
 
 		out.Reservations = append(out.Reservations, reservation{
 			ReservationID: b.ReservationData.ReservationID,
-			ScheduleID:    r.ScheduleID,
+			SlotID:        r.ScheduleID,
 			ClassName:     r.ClassName,
 			VenueID:       b.VenueID,
 			VenueName:     b.VenueName,

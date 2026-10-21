@@ -7,7 +7,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type meOutput struct {
+type accountOutput struct {
 	UserID               int64  `json:"user_id"`
 	Name                 string `json:"name"`
 	Email                string `json:"email"`
@@ -19,18 +19,18 @@ type meOutput struct {
 	UpcomingReservations int    `json:"upcoming_reservations"`
 }
 
-func (h *handlers) me(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, meOutput, error) {
+func (h *handlers) getAccount(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, accountOutput, error) {
 	p, err := h.cp.Profile(ctx)
 	if err != nil {
-		return nil, meOutput{}, err
+		return nil, accountOutput{}, err
 	}
 
 	credits, err := h.cp.CreditsRemaining(ctx, p.ID)
 	if err != nil {
-		return nil, meOutput{}, err
+		return nil, accountOutput{}, err
 	}
 
-	return nil, meOutput{
+	return nil, accountOutput{
 		UserID:               p.ID,
 		Name:                 p.FirstName + " " + p.LastName,
 		Email:                p.Email,

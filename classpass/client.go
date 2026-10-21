@@ -39,6 +39,7 @@ type Client struct {
 	mu     sync.Mutex
 	token  string
 	userID int64
+	home   *LatLon
 }
 
 // New returns a client that uses token if set, otherwise logs in with username/password on first use.
@@ -232,14 +233,20 @@ func (c *Client) UpcomingBookings(ctx context.Context) ([]Booking, error) {
 	return out.Bookings, nil
 }
 
-func (c *Client) LocationAutocomplete(ctx context.Context, query string) ([]PlacePrediction, error) {
+// LocationAutocomplete returns place matches for query, ranked by Google with a bias toward near when given.
+// Shops and venues named after a city often outrank the city itself.
+func (c *Client) LocationAutocomplete(ctx context.Context, query string, near *LatLon) ([]PlacePrediction, error) {
 	var out struct {
 		Data struct {
 			Predictions []PlacePrediction `json:"predictions"`
 		} `json:"data"`
 	}
 
-	body := map[string]string{"autocomplete_type": "geocode", "query": query}
+	body := map[string]any{"autocomplete_type": "geocode", "query": query}
+	if near != nil {
+		body["near"] = near
+	}
+
 	if err := c.do(ctx, http.MethodPost, "/unisearch/v1/location/autocomplete", body, &out); err != nil {
 		return nil, err
 	}
@@ -300,8 +307,9 @@ func (c *Client) Activities(ctx context.Context, query string, lat, lon float64)
 	return nil, nil
 }
 
-// Search returns venues offering the activity within RadiusKm of the point, with their bookable schedules on Date.
-func (c *Client) Search(ctx context.Context, f SearchFilters) ([]Venue, error) {
+// Search returns one page of venues within RadiusKm of the point, with their bookable schedules on Date.
+// Without an Activity it returns every venue in range. Pass the returned page's Cursor to fetch the next page.
+func (c *Client) Search(ctx context.Context, f SearchFilters, cursor string) (*SearchPage, error) {
 	dLat := f.RadiusKm / 111.0
 	dLon := f.RadiusKm / (111.0 * math.Cos(f.Lat*math.Pi/180))
 
@@ -312,20 +320,278 @@ func (c *Client) Search(ctx context.Context, f SearchFilters) ([]Venue, error) {
 		"lon":                  f.Lon,
 		"date":                 f.Date,
 		"map_bounds":           fmt.Sprintf("%f,%f,%f,%f", f.Lon-dLon, f.Lat-dLat, f.Lon+dLon, f.Lat+dLat),
-		"tag":                  []string{f.Activity.ID},
-		"full_text_search":     map[string]string{"tag_names": f.Activity.Name},
+	}
+
+	// The tag is what filters; full_text_search alone is ignored by the API.
+	if f.Activity != nil {
+		filters["tag"] = []string{f.Activity.ID}
+		filters["full_text_search"] = map[string]string{"tag_names": f.Activity.Name}
+	}
+
+	req := map[string]any{"filters": filters}
+	if cursor != "" {
+		req["cursor"] = cursor
 	}
 
 	var out struct {
-		NestedSearch struct {
-			Venues []Venue `json:"venues"`
-		} `json:"nested_search"`
+		NestedSearch SearchPage `json:"nested_search"`
 	}
 
-	body := map[string]any{"search_request": map[string]any{"filters": filters}}
+	body := map[string]any{"search_request": req}
 	if err := c.do(ctx, http.MethodPost, "/unisearch/v3/layout/search", body, &out); err != nil {
 		return nil, err
 	}
 
-	return out.NestedSearch.Venues, nil
+	return &out.NestedSearch, nil
+}
+
+func (c *Client) VenueDetail(ctx context.Context, venueID int64) (*VenueDetail, error) {
+	var out struct {
+		Items []struct {
+			Key    string `json:"key"`
+			Header *struct {
+				Title    string   `json:"title"`
+				Tags     []string `json:"tags"`
+				Location string   `json:"location"`
+			} `json:"header"`
+			Summary *struct {
+				Summary string `json:"summary"`
+			} `json:"summary"`
+			TextBlock *struct {
+				Body string `json:"body"`
+			} `json:"text_block"`
+		} `json:"items"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/bff/v2/venue_detail/%d", venueID), nil, &out); err != nil {
+		return nil, err
+	}
+
+	var v VenueDetail
+	for _, it := range out.Items {
+		switch {
+		case it.Header != nil:
+			v.Name, v.Subtitle = it.Header.Title, it.Header.Location
+			for _, t := range it.Header.Tags {
+				v.Tags = append(v.Tags, strings.TrimSpace(t))
+			}
+
+		case it.Summary != nil:
+			v.About = it.Summary.Summary
+
+		case it.Key == "how_to_get_there" && it.TextBlock != nil:
+			v.HowToGetThere = it.TextBlock.Body
+		}
+	}
+
+	return &v, nil
+}
+
+// VenueOfferings returns the classes a venue offers. A class listed under several sections appears once.
+func (c *Client) VenueOfferings(ctx context.Context, venueID int64) ([]Offering, error) {
+	var out struct {
+		SectionList []struct {
+			ClassList []Offering `json:"class_list"`
+		} `json:"section_list"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/bff/v1/venue_offerings/%d", venueID), nil, &out); err != nil {
+		return nil, err
+	}
+
+	seen := map[int64]bool{}
+	var offerings []Offering
+	for _, s := range out.SectionList {
+		for _, o := range s.ClassList {
+			if seen[o.ID] {
+				continue
+			}
+
+			seen[o.ID] = true
+			offerings = append(offerings, o)
+		}
+	}
+
+	return offerings, nil
+}
+
+// ClassSchedules returns upcoming slots of one class at a venue, starting on date and spanning several days.
+func (c *Client) ClassSchedules(ctx context.Context, venueID, classID int64, date string) ([]ScheduleListItem, error) {
+	var out struct {
+		ScheduleList []ScheduleListItem `json:"schedule_list"`
+	}
+
+	q := url.Values{"class_id": {fmt.Sprint(classID)}, "date": {date}}
+	path := fmt.Sprintf("/bff/v1/venue_schedule_list/%d?%s", venueID, q.Encode())
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+
+	return out.ScheduleList, nil
+}
+
+func (c *Client) Schedule(ctx context.Context, scheduleID int64) (*ScheduleInfo, error) {
+	var s ScheduleInfo
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/schedules/%d", scheduleID), nil, &s); err != nil {
+		return nil, err
+	}
+
+	return &s, nil
+}
+
+// CancellationPolicy returns the human-readable cancellation policy shown on the schedule page.
+func (c *Client) CancellationPolicy(ctx context.Context, scheduleID int64) (string, error) {
+	var out struct {
+		Items []struct {
+			Key       string `json:"key"`
+			TextBlock *struct {
+				Body string `json:"body"`
+			} `json:"text_block"`
+		} `json:"items"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/bff/v3/schedule_detail/%d", scheduleID), nil, &out); err != nil {
+		return "", err
+	}
+
+	for _, it := range out.Items {
+		if it.Key == "cancellation_policy" && it.TextBlock != nil {
+			return it.TextBlock.Body, nil
+		}
+	}
+
+	return "", nil
+}
+
+func (c *Client) Bookmarks(ctx context.Context) ([]BookmarkedVenue, error) {
+	var out struct {
+		Bookmarks []struct {
+			Type  string          `json:"type"`
+			Venue BookmarkedVenue `json:"venue"`
+		} `json:"bookmarks"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, "/v1/me/bookmarks", nil, &out); err != nil {
+		return nil, err
+	}
+
+	var venues []BookmarkedVenue
+	for _, b := range out.Bookmarks {
+		if b.Type == "venue" {
+			venues = append(venues, b.Venue)
+		}
+	}
+
+	return venues, nil
+}
+
+func (c *Client) ReservationModal(ctx context.Context, scheduleID int64) (*ReservationModal, error) {
+	var m ReservationModal
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/bff/v2/reservation_modal/%d", scheduleID), nil, &m); err != nil {
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+// Reserve books a schedule with credits. credits must match the price from ReservationModal.
+func (c *Client) Reserve(ctx context.Context, scheduleID int64, credits int) (*Reservation, error) {
+	body := map[string]any{
+		"opted_in":                false,
+		"event_metadata":          map[string]any{},
+		"credits":                 credits,
+		"type":                    "credits",
+		"flexible_booking_window": false,
+	}
+
+	var r Reservation
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/bff/v1/reservation_modal/%d/reserve", scheduleID), body, &r); err != nil {
+		return nil, err
+	}
+
+	if r.State != 0 || r.ReservationID == 0 {
+		return nil, fmt.Errorf("classpass: reserve schedule %d: unexpected state %d", scheduleID, r.State)
+	}
+
+	return &r, nil
+}
+
+func (c *Client) CancelModal(ctx context.Context, scheduleID int64) (*CancelModal, error) {
+	var m CancelModal
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/bff/v1/reservation_modal/%d/cancel", scheduleID), nil, &m); err != nil {
+		return nil, err
+	}
+
+	return &m, nil
+}
+
+// CancelReservation cancels a reservation. Late cancellations can forfeit credits or charge a fee.
+func (c *Client) CancelReservation(ctx context.Context, reservationID int64) (*Cancellation, error) {
+	var out Cancellation
+	body := map[string]any{"reason": nil}
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/v1/reservations/%d/cancel", reservationID), body, &out); err != nil {
+		return nil, err
+	}
+
+	if out.Status != "CANCELLED" {
+		return nil, fmt.Errorf("classpass: cancel reservation %d: unexpected status %q", reservationID, out.Status)
+	}
+
+	return &out, nil
+}
+
+// HomeLocation returns the center of the city the user's ClassPass account is set to, fetched once per client.
+func (c *Client) HomeLocation(ctx context.Context) (*LatLon, error) {
+	c.mu.Lock()
+	home := c.home
+	c.mu.Unlock()
+
+	if home != nil {
+		return home, nil
+	}
+
+	uid, err := c.UserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var out struct {
+		Location struct {
+			Centroid struct {
+				Latitude  float64 `json:"latitude"`
+				Longitude float64 `json:"longitude"`
+			} `json:"centroid"`
+		} `json:"location"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/gls/user/%d/location", uid), nil, &out); err != nil {
+		return nil, err
+	}
+
+	home = &LatLon{Lat: out.Location.Centroid.Latitude, Lon: out.Location.Centroid.Longitude}
+
+	c.mu.Lock()
+	c.home = home
+	c.mu.Unlock()
+
+	return home, nil
+}
+
+// AddBookmark saves a venue for the user and returns the new bookmark's id.
+func (c *Client) AddBookmark(ctx context.Context, venueID int64) (int64, error) {
+	var out struct {
+		ID int64 `json:"id"`
+	}
+
+	body := map[string]any{"ref_id": venueID, "type": "venue"}
+	if err := c.do(ctx, http.MethodPost, "/v1/me/bookmarks", body, &out); err != nil {
+		return 0, err
+	}
+
+	return out.ID, nil
+}
+
+// RemoveBookmark deletes a bookmark by its bookmark id, not the venue id.
+func (c *Client) RemoveBookmark(ctx context.Context, bookmarkID int64) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/v1/me/bookmarks/%d", bookmarkID), nil, nil)
 }

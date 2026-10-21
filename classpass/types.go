@@ -1,5 +1,7 @@
 package classpass
 
+import "encoding/json"
+
 type Profile struct {
 	ID         int64  `json:"id"`
 	FirstName  string `json:"first_name"`
@@ -48,6 +50,14 @@ type Booking struct {
 type PlacePrediction struct {
 	Description string `json:"description"`
 	PlaceID     string `json:"place_id"`
+
+	// Types are Google place types, e.g. "sublocality" or "transit_station" for areas and "establishment" for shops.
+	Types []string `json:"types"`
+}
+
+type LatLon struct {
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
 }
 
 type Place struct {
@@ -70,7 +80,12 @@ type SearchFilters struct {
 	Lon      float64
 	RadiusKm float64
 	Date     string
-	Activity Activity
+	Activity *Activity
+}
+
+type SearchPage struct {
+	Venues []Venue `json:"venues"`
+	Cursor string  `json:"cursor"`
 }
 
 type Venue struct {
@@ -106,4 +121,125 @@ type Schedule struct {
 		Credits int    `json:"credits"`
 		Status  string `json:"status"`
 	} `json:"availability"`
+}
+
+// VenueDetail is the venue page, flattened from its layout sections.
+type VenueDetail struct {
+	Name          string
+	Subtitle      string
+	Tags          []string
+	About         string
+	HowToGetThere string
+}
+
+// Offering is a class a venue offers, independent of any time slot.
+type Offering struct {
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Activities      []string `json:"activities"`
+	Level           string   `json:"level"`
+	Description     string   `json:"description"`
+	CreditsFrom     *int     `json:"schedule_credits_from"`
+	DurationMinutes int      `json:"schedule_duration_minutes"`
+}
+
+type ScheduleListItem struct {
+	Schedule
+	Class struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"class"`
+	Venue struct {
+		TZ string `json:"tz"`
+	} `json:"venue"`
+}
+
+// ScheduleInfo is a single bookable slot with its class and venue.
+type ScheduleInfo struct {
+	ID               int64   `json:"id"`
+	StartTime        float64 `json:"starttime"`
+	EndTime          float64 `json:"endtime"`
+	DurationMinutes  int     `json:"duration_minutes"`
+	ReservationID    *int64  `json:"reservation_id"`
+	LateCancellation string  `json:"late_cancellation"`
+	Availability     struct {
+		Credits int    `json:"credits"`
+		Status  string `json:"status"`
+	} `json:"availability"`
+	Class struct {
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		Activities  string `json:"activities"`
+		Level       string `json:"level"`
+		Description string `json:"description"`
+		WhatToBring string `json:"what_to_bring"`
+	} `json:"class"`
+	Venue struct {
+		ID       int64   `json:"id"`
+		Name     string  `json:"name"`
+		Subtitle string  `json:"subtitle"`
+		TZ       string  `json:"tz"`
+		Address  Address `json:"address"`
+	} `json:"venue"`
+}
+
+type BookmarkedVenue struct {
+	BookmarkID int64 `json:"bookmark_id"`
+
+	ID       int64   `json:"id"`
+	Name     string  `json:"name"`
+	Subtitle string  `json:"subtitle"`
+	Address  Address `json:"address"`
+}
+
+// ReservationModal is the checkout screen shown before reserving a schedule.
+type ReservationModal struct {
+	State int `json:"state"`
+	Modal struct {
+		Policy struct {
+			Explainers []string `json:"explainers"`
+		} `json:"policy"`
+		Pricing struct {
+			Credits int `json:"credits"`
+		} `json:"pricing"`
+		Footer struct {
+			CTA []CTA `json:"cta"`
+		} `json:"footer"`
+	} `json:"modal"`
+}
+
+// CTA is an action button on a modal; Type is "credits" for reserve and "cancel" for cancel.
+type CTA struct {
+	Type    string `json:"type"`
+	Label   string `json:"label"`
+	Enabled bool   `json:"enabled"`
+}
+
+// CancelModal is the confirmation screen shown before cancelling a reservation.
+// Message is null for a free cancellation; its shape when set is unknown.
+type CancelModal struct {
+	State         int   `json:"state"`
+	ReservationID int64 `json:"reservation_id"`
+	Modal         struct {
+		Message json.RawMessage `json:"message"`
+		Footer  struct {
+			CTA []CTA `json:"cta"`
+		} `json:"footer"`
+	} `json:"modal"`
+}
+
+type Cancellation struct {
+	Status        string `json:"status"`
+	LateCancelled bool   `json:"late_cancelled"`
+	Fee           string `json:"fee"`
+	Title         string `json:"title"`
+}
+
+type Reservation struct {
+	State          int   `json:"state"`
+	ReservationID  int64 `json:"reservation_id"`
+	CreditsBalance struct {
+		CreditsTotal     int `json:"credits_total"`
+		CreditsRemaining int `json:"credits_remaining"`
+	} `json:"credits_balance"`
 }
