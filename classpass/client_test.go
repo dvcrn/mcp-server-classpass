@@ -203,7 +203,8 @@ func TestVenueDetailFlattensSections(t *testing.T) {
 		io.WriteString(w, `{"items":[
 			{"key":"header","header":{"title":"B+TREE","tags":["Massage"," Facial"],"location":"Sangenjaya"}},
 			{"key":"summary","summary":{"summary":"About text"}},
-			{"key":"how_to_get_there","text_block":{"body":"Directions"}}]}`)
+			{"key":"how_to_get_there","text_block":{"body":"Directions"}},
+			{"key":"reviews","reviews":{"rating":4.9,"number_of_ratings":"1,000+","reviews":[{"title":"Massage 60","body":"Great","name":"Kile"}]}}]}`)
 	})
 
 	v, err := c.VenueDetail(context.Background(), 9)
@@ -212,7 +213,8 @@ func TestVenueDetailFlattensSections(t *testing.T) {
 	}
 
 	if v.Name != "B+TREE" || v.Subtitle != "Sangenjaya" || v.About != "About text" || v.HowToGetThere != "Directions" ||
-		len(v.Tags) != 2 || v.Tags[1] != "Facial" {
+		len(v.Tags) != 2 || v.Tags[1] != "Facial" || v.Rating != 4.9 || v.RatingsCount != "1,000+" ||
+		len(v.Reviews) != 1 || v.Reviews[0] != (Review{Class: "Massage 60", Text: "Great"}) {
 		t.Errorf("venue = %+v", v)
 	}
 }

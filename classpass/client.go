@@ -412,6 +412,11 @@ func (c *Client) VenueDetail(ctx context.Context, venueID int64) (*VenueDetail, 
 			TextBlock *struct {
 				Body string `json:"body"`
 			} `json:"text_block"`
+			Reviews *struct {
+				Rating          float64  `json:"rating"`
+				NumberOfRatings string   `json:"number_of_ratings"`
+				Reviews         []Review `json:"reviews"`
+			} `json:"reviews"`
 		} `json:"items"`
 	}
 
@@ -433,6 +438,9 @@ func (c *Client) VenueDetail(ctx context.Context, venueID int64) (*VenueDetail, 
 
 		case it.Key == "how_to_get_there" && it.TextBlock != nil:
 			v.HowToGetThere = it.TextBlock.Body
+
+		case it.Reviews != nil:
+			v.Rating, v.RatingsCount, v.Reviews = it.Reviews.Rating, it.Reviews.NumberOfRatings, it.Reviews.Reviews
 		}
 	}
 

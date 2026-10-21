@@ -31,7 +31,15 @@ type venueOutput struct {
 	Tags          []string   `json:"tags"`
 	About         string     `json:"about"`
 	HowToGetThere string     `json:"how_to_get_there"`
+	Rating        float64    `json:"rating"`
+	RatingsCount  string     `json:"ratings_count"`
+	Reviews       []review   `json:"reviews"`
 	Classes       []offering `json:"classes"`
+}
+
+type review struct {
+	Class string `json:"class"`
+	Text  string `json:"text"`
 }
 
 func (h *handlers) getVenue(ctx context.Context, _ *mcp.CallToolRequest, in venueInput) (*mcp.CallToolResult, venueOutput, error) {
@@ -52,7 +60,14 @@ func (h *handlers) getVenue(ctx context.Context, _ *mcp.CallToolRequest, in venu
 		Tags:          v.Tags,
 		About:         v.About,
 		HowToGetThere: v.HowToGetThere,
+		Rating:        v.Rating,
+		RatingsCount:  v.RatingsCount,
+		Reviews:       []review{},
 		Classes:       []offering{},
+	}
+
+	for _, r := range v.Reviews {
+		out.Reviews = append(out.Reviews, review{Class: r.Class, Text: r.Text})
 	}
 
 	for _, o := range offerings {

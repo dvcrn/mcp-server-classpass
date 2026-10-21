@@ -61,8 +61,9 @@ func tools(s *mcp.Server, h *handlers) {
 	}, h.searchVenues)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "get_venue",
-		Description: "Get a venue's details and the classes it offers (class_id, credits_from). Use list_slots for a class's time slots.",
+		Name: "get_venue",
+		Description: "Get a venue's details, rating with a few recent reviews, and the classes it offers (class_id, credits_from). " +
+			"Use list_slots for a class's time slots.",
 		Annotations: readOnly,
 	}, h.getVenue)
 

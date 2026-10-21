@@ -145,6 +145,18 @@ type VenueDetail struct {
 	Tags          []string
 	About         string
 	HowToGetThere string
+
+	Rating float64
+
+	// RatingsCount is ClassPass's display text, e.g. "2" or "1,000+".
+	RatingsCount string
+	Reviews      []Review
+}
+
+// Review is one of the few recent reviews shown on a venue page.
+type Review struct {
+	Class string `json:"title"`
+	Text  string `json:"body"`
 }
 
 // Offering is a class a venue offers, independent of any time slot.
