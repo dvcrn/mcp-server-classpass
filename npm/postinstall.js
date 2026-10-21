@@ -157,8 +157,9 @@ async function installBinary() {
   // extract only the binary into npm directory (archive contains binary at root)
   const tmpFile = path.join(os.tmpdir(), `${REPO}-${Date.now()}.tar.gz`);
   fs.writeFileSync(tmpFile, tarGz);
+  // stdout stays untouched: it carries the protocol when index.js installs on first run of a stdio server.
   const tarRes = spawnSync("tar", ["-xzf", tmpFile, "-C", outDir, exe], {
-    stdio: "inherit",
+    stdio: ["ignore", 2, 2],
   });
   if (tarRes.status !== 0) {
     throw new Error("postinstall: failed to extract binary");
