@@ -54,7 +54,7 @@ func TestToolsRegistered(t *testing.T) {
 	}
 
 	slices.Sort(names)
-	want := []string{"add_bookmark", "book_slot", "cancel_reservation", "get_account", "get_slot", "get_venue", "list_bookmarks", "list_reservations", "list_slots", "remove_bookmark", "search_classes", "search_locations", "search_venues"}
+	want := []string{"add_bookmark", "book_slot", "cancel_reservation", "get_account", "get_slot", "get_venue", "list_bookmarks", "list_reservations", "list_slots", "list_tags", "remove_bookmark", "search_classes", "search_locations", "search_venues"}
 	if !slices.Equal(names, want) {
 		t.Errorf("tools = %v, want %v", names, want)
 	}
@@ -759,21 +759,6 @@ func TestSearchClassesVenueNameAndHomeDefault(t *testing.T) {
 	}
 }
 
-func TestSearchVenues(t *testing.T) {
-	cs := connect(t, homeHandler(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, keywordsJSON)
-	}))
-
-	out, res := callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"query": "B+TREE"})
-	if res.IsError {
-		t.Fatalf("tool error: %v", res.Content)
-	}
-
-	if len(out.Venues) != 1 || out.Venues[0] != (venueMatch{VenueID: 282110, Name: "B+TREE Sangenjaya", DistanceKm: 1.1}) {
-		t.Errorf("venues = %+v", out.Venues)
-	}
-}
-
 func TestListReservationsIncludePast(t *testing.T) {
 	var queries []string
 	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {
@@ -800,5 +785,156 @@ func TestBookRefusesPriceAboveMaxCredits(t *testing.T) {
 
 	if _, res := callTool[bookOutput](t, cs, "book_slot", map[string]any{"slot_id": 42, "max_credits": 20}); !res.IsError {
 		t.Error("expected error when the price exceeds max_credits")
+	}
+}
+
+const tagsJSON = `{"tags":[
+	{"id":"21149","name":"Non-Cancellable","subtags":[]},
+	{"id":"17142","name":"Marketing","subtags":[{"id":"1","name":"Promo"}]},
+	{"id":"16585","name":"Food and Drink","subtags":[{"id":"19458","name":"Coffee","subtags":[]}]},
+	{"id":"1143","name":"Experiences","subtags":[{"id":"1145","name":"Massage","subtags":[{"id":"9","name":"Deep tissue","subtags":[]}]}]}]}`
+
+// fakeTagsAPI serves the tag tree, keyword lookups, and venue searches, recording the tags searched.
+func fakeTagsAPI(t *testing.T, venueTags, classTags *[]string) http.HandlerFunc {
+	return homeHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bff/v1/tags":
+			io.WriteString(w, tagsJSON)
+
+		case "/unisearch/v1/keyword/autocomplete":
+			io.WriteString(w, `{"data":{"results":[{"type":"activities","entries":[{"id":"19458","name":"Coffee"}]},
+				{"type":"venues","entries":[{"id":7,"name":"Cafe","distance":0.4}]}]}}`)
+
+		case "/unisearch/v1/venues":
+			var body struct {
+				Tag []string `json:"tag"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			*venueTags = append(*venueTags, body.Tag...)
+
+			io.WriteString(w, `{"total_hits":3,"venues":[
+				{"id":2,"name":"Far","distance":2.0,"is_open":true,"activities":"Coffee","rating_average":4.5,"rating_display_total":"10"},
+				{"id":1,"name":"Near","distance":0.5,"is_open":false}]}`)
+
+		case "/unisearch/v3/layout/search":
+			var body struct {
+				SearchRequest struct {
+					Filters struct {
+						Tag []string `json:"tag"`
+					} `json:"filters"`
+				} `json:"search_request"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			*classTags = append(*classTags, body.SearchRequest.Filters.Tag...)
+
+			io.WriteString(w, `{"nested_search":{"venues":[]}}`)
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+}
+
+func TestListTags(t *testing.T) {
+	var venueTags, classTags []string
+	cs := connect(t, fakeTagsAPI(t, &venueTags, &classTags))
+
+	paths := func(out listTagsOutput) []string {
+		var p []string
+		for _, e := range out.Tags {
+			p = append(p, e.TagID+" "+e.Path)
+		}
+
+		return p
+	}
+
+	out, _ := callTool[listTagsOutput](t, cs, "list_tags", map[string]any{})
+	want := []string{"16585 Food and Drink", "19458 Food and Drink > Coffee", "1143 Experiences", "1145 Experiences > Massage"}
+	if got := paths(out); !slices.Equal(got, want) {
+		t.Errorf("overview = %v, want %v", got, want)
+	}
+
+	out, _ = callTool[listTagsOutput](t, cs, "list_tags", map[string]any{"category": "massage"})
+	want = []string{"1145 Massage", "9 Massage > Deep tissue"}
+	if got := paths(out); !slices.Equal(got, want) {
+		t.Errorf("category = %v, want %v", got, want)
+	}
+
+	if _, res := callTool[listTagsOutput](t, cs, "list_tags", map[string]any{"category": "nope"}); !res.IsError {
+		t.Error("unknown category should fail")
+	}
+}
+
+func TestSearchVenuesModes(t *testing.T) {
+	var venueTags, classTags []string
+	cs := connect(t, fakeTagsAPI(t, &venueTags, &classTags))
+
+	out, res := callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"activity": "coffee"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if out.Tag != "Coffee" || out.TotalHits != 3 || len(out.Venues) != 2 || out.Venues[0].VenueID != 1 || out.Note == "" {
+		t.Errorf("activity search = %+v", out)
+	}
+
+	if v := out.Venues[1]; v.OpenNow == nil || !*v.OpenNow || v.Rating != 4.5 || v.RatingsCount != "10" {
+		t.Errorf("venue fields = %+v", v)
+	}
+
+	out, _ = callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"tag_id": "16585"})
+	if out.Tag != "Food and Drink" {
+		t.Errorf("tag search = %+v", out)
+	}
+
+	if !slices.Equal(venueTags, []string{"19458", "16585"}) {
+		t.Errorf("searched tags = %v", venueTags)
+	}
+
+	out, _ = callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"name": "Cafe"})
+	if len(out.Venues) != 1 || out.Venues[0].VenueID != 7 || out.Venues[0].OpenNow != nil {
+		t.Errorf("name search = %+v", out)
+	}
+
+	for _, args := range []map[string]any{{}, {"name": "a", "tag_id": "1"}} {
+		if _, res := callTool[searchVenuesOutput](t, cs, "search_venues", args); !res.IsError {
+			t.Errorf("args %v should fail", args)
+		}
+	}
+
+	if _, res := callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"tag_id": "999"}); !res.IsError {
+		t.Error("unknown tag_id should fail")
+	}
+}
+
+func TestSearchClassesTagID(t *testing.T) {
+	var venueTags, classTags []string
+	cs := connect(t, fakeTagsAPI(t, &venueTags, &classTags))
+
+	out := callSearch(t, cs, map[string]any{"tag_id": "1145"})
+	if out.Activity != "Massage" || !slices.Equal(classTags, []string{"1145"}) {
+		t.Errorf("activity = %q, searched tags = %v", out.Activity, classTags)
+	}
+}
+
+func TestEmbeddedLocationArgsInSchema(t *testing.T) {
+	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {})
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tool := range res.Tools {
+		if tool.Name != "search_classes" && tool.Name != "search_venues" {
+			continue
+		}
+
+		b, _ := json.Marshal(tool.InputSchema)
+		for _, p := range []string{`"location"`, `"place_id"`, `"lat"`, `"radius_km"`} {
+			if !strings.Contains(string(b), p) {
+				t.Errorf("%s schema lacks %s: %s", tool.Name, p, b)
+			}
+		}
 	}
 }

@@ -16,27 +16,23 @@ import (
 )
 
 const (
-	defaultRadiusKm      = 3.0
 	defaultLimit         = 10
 	maxLimit             = 50
 	defaultSlotsPerClass = 5
 )
 
 type searchInput struct {
-	Query         string   `json:"query,omitempty" jsonschema:"activity to search for, e.g. massage, yoga, pilates; omit to browse everything nearby"`
-	Location      string   `json:"location,omitempty" jsonschema:"place name, e.g. Shibuya or Sangenjaya; defaults to the user's ClassPass city when no location, place_id, or lat and lon is given"`
-	PlaceID       string   `json:"place_id,omitempty" jsonschema:"exact place from search_locations or a previous result's other_locations"`
-	Lat           *float64 `json:"lat,omitempty" jsonschema:"latitude of the search center"`
-	Lon           *float64 `json:"lon,omitempty" jsonschema:"longitude of the search center"`
-	RadiusKm      *float64 `json:"radius_km,omitempty" jsonschema:"search radius in km; defaults to 3, or the size of the named place if larger"`
-	Date          string   `json:"date,omitempty" jsonschema:"day to search in YYYY-MM-DD; defaults to today"`
-	EndDate       string   `json:"end_date,omitempty" jsonschema:"last day to search in YYYY-MM-DD, at most 3 days after date; one request per day"`
-	MaxCredits    *int     `json:"max_credits,omitempty" jsonschema:"only slots costing at most this many credits"`
-	TimeAfter     string   `json:"time_after,omitempty" jsonschema:"earliest slot start, venue-local HH:MM, e.g. 07:30"`
-	TimeBefore    string   `json:"time_before,omitempty" jsonschema:"latest slot start, venue-local HH:MM, e.g. 18:00"`
-	Limit         int      `json:"limit,omitempty" jsonschema:"max venues to return, default 10, max 50"`
-	SlotsPerClass int      `json:"slots_per_class,omitempty" jsonschema:"max slots listed per class, default 5"`
-	Cursor        string   `json:"cursor,omitempty" jsonschema:"cursor from a previous result to get more venues; repeat the other arguments unchanged"`
+	Query string `json:"query,omitempty" jsonschema:"activity to search for, e.g. massage, yoga, pilates; omit to browse everything nearby"`
+	TagID string `json:"tag_id,omitempty" jsonschema:"exact activity tag id from list_tags, instead of query"`
+	locationArgs
+	Date          string `json:"date,omitempty" jsonschema:"day to search in YYYY-MM-DD; defaults to today"`
+	EndDate       string `json:"end_date,omitempty" jsonschema:"last day to search in YYYY-MM-DD, at most 3 days after date; one request per day"`
+	MaxCredits    *int   `json:"max_credits,omitempty" jsonschema:"only slots costing at most this many credits"`
+	TimeAfter     string `json:"time_after,omitempty" jsonschema:"earliest slot start, venue-local HH:MM, e.g. 07:30"`
+	TimeBefore    string `json:"time_before,omitempty" jsonschema:"latest slot start, venue-local HH:MM, e.g. 18:00"`
+	Limit         int    `json:"limit,omitempty" jsonschema:"max venues to return, default 10, max 50"`
+	SlotsPerClass int    `json:"slots_per_class,omitempty" jsonschema:"max slots listed per class, default 5"`
+	Cursor        string `json:"cursor,omitempty" jsonschema:"cursor from a previous result to get more venues; repeat the other arguments unchanged"`
 }
 
 type slot struct {
@@ -119,31 +115,43 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 		return searchOutput{}, fmt.Errorf("limit must be between 1 and %d", maxLimit)
 	}
 
-	if in.RadiusKm != nil && *in.RadiusKm <= 0 {
-		return searchOutput{}, errors.New("radius_km must be positive")
+	if in.Query != "" && in.TagID != "" {
+		return searchOutput{}, errors.New("pass either query or tag_id, not both")
 	}
 
-	f := classpass.SearchFilters{Date: date, RadiusKm: defaultRadiusKm}
-	out := searchOutput{Date: date, Venues: []venue{}}
-
-	if err := resolveSearchLocation(ctx, cp, in, &f, &out); err != nil {
+	c, err := resolveCenter(ctx, cp, in.locationArgs)
+	if err != nil {
 		return searchOutput{}, err
 	}
 
-	if in.RadiusKm != nil {
-		f.RadiusKm = *in.RadiusKm
+	f := classpass.SearchFilters{Date: date, Lat: c.Lat, Lon: c.Lon, RadiusKm: c.RadiusKm}
+	out := searchOutput{
+		Date:           date,
+		Venues:         []venue{},
+		Location:       c.Name,
+		PlaceID:        c.PlaceID,
+		OtherLocations: c.Others,
+		RadiusKm:       c.RadiusKm,
 	}
 
-	out.RadiusKm = f.RadiusKm
-
-	if in.Query != "" {
-		act, err := resolveActivity(ctx, cp, in.Query, f.Lat, f.Lon)
+	switch {
+	case in.TagID != "":
+		tag, err := findTag(ctx, cp, in.TagID)
 		if err != nil {
 			return searchOutput{}, err
 		}
 
-		f.Activity = act
-		out.Activity = act.Name
+		f.Activity = &classpass.Activity{ID: tag.ID, Name: tag.Name}
+
+	case in.Query != "":
+		f.Activity, err = resolveActivity(ctx, cp, in.Query, f.Lat, f.Lon)
+		if err != nil {
+			return searchOutput{}, err
+		}
+	}
+
+	if f.Activity != nil {
+		out.Activity = f.Activity.Name
 	}
 
 	days, err := dateRange(date, in.EndDate)
@@ -234,57 +242,6 @@ func (sf slotFilter) keep(s classpass.Schedule, loc *time.Location) bool {
 	}
 
 	return true
-}
-
-// resolveSearchLocation sets the search center and radius from lat/lon, place_id, or a place name, in that
-// order, defaulting to the user's ClassPass city.
-func resolveSearchLocation(ctx context.Context, cp *classpass.Client, in searchInput, f *classpass.SearchFilters, out *searchOutput) error {
-	if in.Lat != nil && in.Lon != nil {
-		f.Lat, f.Lon = *in.Lat, *in.Lon
-		out.Location = fmt.Sprintf("%f,%f", f.Lat, f.Lon)
-
-		return nil
-	}
-
-	placeID := in.PlaceID
-	if placeID == "" && in.Location == "" {
-		home, err := cp.HomeLocation(ctx)
-		if err != nil {
-			return fmt.Errorf("no location given and the user's ClassPass city is unavailable: %w", err)
-		}
-
-		f.Lat, f.Lon = home.Lat, home.Lon
-		out.Location = home.Name
-
-		return nil
-	}
-
-	if placeID == "" {
-		candidates, err := placeCandidates(ctx, cp, in.Location, nil)
-		if err != nil {
-			return err
-		}
-
-		placeID = candidates[0].PlaceID
-		out.OtherLocations = candidates[1:]
-	}
-
-	uid, err := cp.UserID(ctx)
-	if err != nil {
-		return err
-	}
-
-	place, err := cp.ResolvePlace(ctx, uid, placeID)
-	if err != nil {
-		return err
-	}
-
-	f.Lat, f.Lon = place.Lat, place.Lon
-	f.RadiusKm = max(f.RadiusKm, place.RadiusKm)
-	out.Location = place.FormattedAddress
-	out.PlaceID = placeID
-
-	return nil
 }
 
 // resolveActivity maps a query to an activity whose name matches it. ClassPass ranks unrelated activities first

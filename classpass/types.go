@@ -270,3 +270,40 @@ type Reservation struct {
 		CreditsRemaining int `json:"credits_remaining"`
 	} `json:"credits_balance"`
 }
+
+// Tag is a node in ClassPass's category tree, e.g. Food and Drink > Coffee. Searches filter by tag id.
+type Tag struct {
+	ID         string `json:"id"`
+	ParentID   string `json:"parent_id"`
+	Name       string `json:"name"`
+	Filterable bool   `json:"filterable"`
+	Subtags    []Tag  `json:"subtags"`
+}
+
+// VenueSearchFilters selects venues carrying TagID within RadiusKm of a point.
+type VenueSearchFilters struct {
+	Lat      float64
+	Lon      float64
+	RadiusKm float64
+	Date     string
+	TagID    string
+	Count    int
+}
+
+type VenueSearchPage struct {
+	TotalHits int          `json:"total_hits"`
+	Venues    []FoundVenue `json:"venues"`
+}
+
+// FoundVenue is a venue from a tag search, without classes or slots.
+type FoundVenue struct {
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	Subtitle     string  `json:"subtitle"`
+	Activities   string  `json:"activities"`
+	DistanceKm   float64 `json:"distance"`
+	IsOpen       bool    `json:"is_open"`
+	Rating       float64 `json:"rating_average"`
+	RatingsCount string  `json:"rating_display_total"`
+	Address      Address `json:"address"`
+}

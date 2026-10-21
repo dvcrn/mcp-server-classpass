@@ -45,6 +45,7 @@ type Client struct {
 	userID int64
 	home   *Home
 	places map[string]*Place
+	tags   []Tag
 }
 
 // New returns a client that uses token if set, otherwise logs in with username/password on first use.
@@ -661,4 +662,58 @@ func (c *Client) AddBookmark(ctx context.Context, venueID int64) (int64, error) 
 // RemoveBookmark deletes a bookmark by its bookmark id, not the venue id.
 func (c *Client) RemoveBookmark(ctx context.Context, bookmarkID int64) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/v1/me/bookmarks/%d", bookmarkID), nil, nil)
+}
+
+// Tags returns ClassPass's category tree, fetched once per client.
+func (c *Client) Tags(ctx context.Context) ([]Tag, error) {
+	c.mu.Lock()
+	tags := c.tags
+	c.mu.Unlock()
+
+	if tags != nil {
+		return tags, nil
+	}
+
+	var out struct {
+		Tags []Tag `json:"tags"`
+	}
+
+	if err := c.do(ctx, http.MethodGet, "/bff/v1/tags", nil, &out); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.tags = out.Tags
+	c.mu.Unlock()
+
+	return out.Tags, nil
+}
+
+// SearchVenues returns up to Count venues tagged TagID near the point. Unlike Search it carries no classes or
+// slots, so one request covers far more venues.
+func (c *Client) SearchVenues(ctx context.Context, f VenueSearchFilters) (*VenueSearchPage, error) {
+	dLat := f.RadiusKm / 111.0
+	dLon := f.RadiusKm / (111.0 * math.Cos(f.Lat*math.Pi/180))
+
+	body := map[string]any{
+		"sort_by_is_open":         true,
+		"exclude_past_booking":    true,
+		"find_next_available":     true,
+		"lat":                     f.Lat,
+		"lon":                     f.Lon,
+		"viewport_south_west_lat": f.Lat - dLat,
+		"viewport_south_west_lon": f.Lon - dLon,
+		"viewport_north_east_lat": f.Lat + dLat,
+		"viewport_north_east_lon": f.Lon + dLon,
+		"date":                    f.Date,
+		"tag":                     []string{f.TagID},
+		"count":                   f.Count,
+	}
+
+	var page VenueSearchPage
+	if err := c.do(ctx, http.MethodPost, "/unisearch/v1/venues", body, &page); err != nil {
+		return nil, err
+	}
+
+	return &page, nil
 }

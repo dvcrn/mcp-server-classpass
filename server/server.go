@@ -47,18 +47,26 @@ func tools(s *mcp.Server, h *handlers) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_classes",
 		Description: "Discover classes near a place over one to four days, optionally filtered by activity, start time window, and credit cost. " +
-			"Defaults to the user's ClassPass city when no location is given. " +
+			"Defaults to the user's ClassPass city when no location is given. Pass query, or tag_id from list_tags for an exact activity. " +
 			"Returns venues nearest first, each with classes and bookable time slots (slot_id, credits). Times are venue-local.",
 		InputSchema: inputSchema[searchInput](),
 	}, h.searchClasses)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_venues",
-		Description: "Find venues by name, e.g. a studio the user mentions. Returns venue_id for get_venue and list_slots. " +
-			"Use search_classes instead to search by activity.",
-		Annotations: readOnly,
+		Description: "Find venues without listing their time slots: by name (a studio the user mentions), by activity (e.g. coffee, massage), " +
+			"or by tag_id from list_tags. Nearest first, with venue_id for get_venue and list_slots. " +
+			"This is the way to find food and drink venues; their menu items are the classes in get_venue. " +
+			"Use search_classes instead to find bookable times.",
 		InputSchema: inputSchema[searchVenuesInput](),
 	}, h.searchVenues)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "list_tags",
+		Description: "List ClassPass categories and their tags (tag_id), e.g. Food and Drink > Coffee or Experiences > Massage. " +
+			"Without category it returns the overview; pass a category name or tag_id to expand it. Use tag_id in search_venues or search_classes.",
+		Annotations: readOnly,
+	}, h.listTags)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_venue",
