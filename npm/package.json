@@ -2,6 +2,7 @@
   "name": "mcp-server-classpass",
   "version": "0.1.0",
   "description": "MCP server for searching and booking ClassPass classes",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dvcrn/mcp-server-classpass.git",
