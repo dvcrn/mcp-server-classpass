@@ -1,3 +1,9 @@
 bin/
 fnox.local.toml
 .claude/skills/
+
+# GoReleaser output and the npm wrapper's downloaded binary
+dist/
+npm/node_modules/
+npm/mcp-server-classpass
+npm/mcp-server-classpass.exe

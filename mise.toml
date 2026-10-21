@@ -1,5 +1,6 @@
 [tools]
 go = "1.27.2"
+goreleaser = "2.18.3"
 
 [tasks.build]
 run = "go build -o bin/mcp-server-classpass ."
@@ -12,3 +13,7 @@ run = ["test -z \"$(gofmt -l .)\" || (gofmt -l . && exit 1)", "go vet ./..."]
 
 [tasks.run]
 run = "fnox exec -- go run ."
+
+[tasks.release-check]
+description = "Validate the GoReleaser config and build a local snapshot into dist/"
+run = ["goreleaser check", "goreleaser release --snapshot --clean"]
