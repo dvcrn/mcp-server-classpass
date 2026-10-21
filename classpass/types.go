@@ -1,0 +1,109 @@
+package classpass
+
+type Profile struct {
+	ID         int64  `json:"id"`
+	FirstName  string `json:"first_name"`
+	LastName   string `json:"last_name"`
+	Email      string `json:"email"`
+	Username   string `json:"username"`
+	Timezone   string `json:"timezone"`
+	Membership struct {
+		PlanName    string `json:"plan_name"`
+		PlanCredits int    `json:"plan_credits"`
+		Status      string `json:"status"`
+		CycleEnd    int64  `json:"cycle_end"`
+	} `json:"membership"`
+	ReservationInfo struct {
+		CycleReservationCount    int `json:"cycle_reservation_count"`
+		UpcomingReservationCount int `json:"upcoming_reservation_count"`
+	} `json:"reservation_info"`
+}
+
+type Address struct {
+	AddressLine1 string `json:"address_line1"`
+	City         string `json:"city"`
+}
+
+type Booking struct {
+	BookingID       string  `json:"booking_id"`
+	VenueID         int64   `json:"venue_id"`
+	VenueName       string  `json:"venue_name"`
+	Status          string  `json:"status"`
+	Timezone        string  `json:"timezone"`
+	Credits         int     `json:"credits"`
+	EntityType      string  `json:"entity_type"`
+	Address         Address `json:"address"`
+	ReservationData struct {
+		ReservationID  int64 `json:"reservation_id"`
+		RawReservation struct {
+			ScheduleID int64  `json:"schedule_id"`
+			ClassID    int64  `json:"class_id"`
+			ClassName  string `json:"class_name"`
+			StartTime  string `json:"start_time"`
+			EndTime    string `json:"end_time"`
+		} `json:"raw_reservation"`
+	} `json:"reservation_data"`
+}
+
+type PlacePrediction struct {
+	Description string `json:"description"`
+	PlaceID     string `json:"place_id"`
+}
+
+type Place struct {
+	Name             string  `json:"name"`
+	FormattedAddress string  `json:"formatted_address"`
+	Lat              float64 `json:"lat"`
+	Lon              float64 `json:"lon"`
+	Timezone         string  `json:"timezone"`
+	RadiusKm         float64 `json:"calculated_radius_km"`
+}
+
+// Activity is a searchable category. Its ID is the search tag that actually filters results.
+type Activity struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type SearchFilters struct {
+	Lat      float64
+	Lon      float64
+	RadiusKm float64
+	Date     string
+	Activity Activity
+}
+
+type Venue struct {
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	Subtitle   string  `json:"subtitle"`
+	Activities *string `json:"activities"`
+	DistanceKm float64 `json:"distance"`
+	TZ         string  `json:"tz"`
+	Address    Address `json:"address"`
+	Ratings    struct {
+		Mean  float64 `json:"mean"`
+		Count struct {
+			Total int `json:"total"`
+		} `json:"count"`
+	} `json:"ratings"`
+	Classes []Class `json:"classes"`
+}
+
+type Class struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	Activities string     `json:"activities"`
+	Schedules  []Schedule `json:"schedules"`
+}
+
+type Schedule struct {
+	ID              int64 `json:"id"`
+	StartTime       int64 `json:"starttime"`
+	EndTime         int64 `json:"endtime"`
+	DurationMinutes int   `json:"duration_minutes"`
+	Availability    struct {
+		Credits int    `json:"credits"`
+		Status  string `json:"status"`
+	} `json:"availability"`
+}

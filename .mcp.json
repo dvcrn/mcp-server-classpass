@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "classpass": {
+      "command": "fnox",
+      "args": ["exec", "--", "go", "run", "."]
+    }
+  }
+}

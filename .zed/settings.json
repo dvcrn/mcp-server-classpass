@@ -1,0 +1,8 @@
+{
+  "context_servers": {
+    "classpass": {
+      "command": "fnox",
+      "args": ["exec", "--", "go", "run", "."]
+    }
+  }
+}

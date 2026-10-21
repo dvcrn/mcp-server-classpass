@@ -1,0 +1,14 @@
+[tools]
+go = "1.27.2"
+
+[tasks.build]
+run = "go build -o bin/mcp-server-classpass ."
+
+[tasks.test]
+run = "go test ./..."
+
+[tasks.lint]
+run = ["test -z \"$(gofmt -l .)\" || (gofmt -l . && exit 1)", "go vet ./..."]
+
+[tasks.run]
+run = "fnox exec -- go run ."
