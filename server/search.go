@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
@@ -23,7 +24,7 @@ const (
 
 type searchInput struct {
 	Query         string   `json:"query,omitempty" jsonschema:"activity to search for, e.g. massage, yoga, pilates; omit to browse everything nearby"`
-	Location      string   `json:"location,omitempty" jsonschema:"place name, e.g. Shibuya or Sangenjaya; required unless place_id or lat and lon are given"`
+	Location      string   `json:"location,omitempty" jsonschema:"place name, e.g. Shibuya or Sangenjaya; defaults to the user's ClassPass city when no location, place_id, or lat and lon is given"`
 	PlaceID       string   `json:"place_id,omitempty" jsonschema:"exact place from search_locations or a previous result's other_locations"`
 	Lat           *float64 `json:"lat,omitempty" jsonschema:"latitude of the search center"`
 	Lon           *float64 `json:"lon,omitempty" jsonschema:"longitude of the search center"`
@@ -98,7 +99,7 @@ func (h *handlers) searchClasses(ctx context.Context, _ *mcp.CallToolRequest, in
 }
 
 func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOutput, error) {
-	date, err := parseDate(in.Date)
+	date, err := parseDate(ctx, cp, in.Date)
 	if err != nil {
 		return searchOutput{}, err
 	}
@@ -125,40 +126,8 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 	f := classpass.SearchFilters{Date: date, RadiusKm: defaultRadiusKm}
 	out := searchOutput{Date: date, Venues: []venue{}}
 
-	switch {
-	case in.Lat != nil && in.Lon != nil:
-		f.Lat, f.Lon = *in.Lat, *in.Lon
-		out.Location = fmt.Sprintf("%f,%f", f.Lat, f.Lon)
-
-	case in.PlaceID != "" || in.Location != "":
-		placeID := in.PlaceID
-		if placeID == "" {
-			candidates, err := placeCandidates(ctx, cp, in.Location, nil)
-			if err != nil {
-				return searchOutput{}, err
-			}
-
-			placeID = candidates[0].PlaceID
-			out.OtherLocations = candidates[1:]
-		}
-
-		uid, err := cp.UserID(ctx)
-		if err != nil {
-			return searchOutput{}, err
-		}
-
-		place, err := cp.ResolvePlace(ctx, uid, placeID)
-		if err != nil {
-			return searchOutput{}, err
-		}
-
-		f.Lat, f.Lon = place.Lat, place.Lon
-		f.RadiusKm = max(f.RadiusKm, place.RadiusKm)
-		out.Location = place.FormattedAddress
-		out.PlaceID = placeID
-
-	default:
-		return searchOutput{}, errors.New("one of location, place_id, or lat and lon is required")
+	if err := resolveSearchLocation(ctx, cp, in, &f, &out); err != nil {
+		return searchOutput{}, err
 	}
 
 	if in.RadiusKm != nil {
@@ -168,17 +137,13 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 	out.RadiusKm = f.RadiusKm
 
 	if in.Query != "" {
-		acts, err := cp.Activities(ctx, in.Query, f.Lat, f.Lon)
+		act, err := resolveActivity(ctx, cp, in.Query, f.Lat, f.Lon)
 		if err != nil {
 			return searchOutput{}, err
 		}
 
-		if len(acts) == 0 {
-			return searchOutput{}, fmt.Errorf("no activity matches %q; try a broader term, or omit query to browse everything nearby", in.Query)
-		}
-
-		f.Activity = &acts[0]
-		out.Activity = acts[0].Name
+		f.Activity = act
+		out.Activity = act.Name
 	}
 
 	days, err := dateRange(date, in.EndDate)
@@ -269,6 +234,85 @@ func (sf slotFilter) keep(s classpass.Schedule, loc *time.Location) bool {
 	}
 
 	return true
+}
+
+// resolveSearchLocation sets the search center and radius from lat/lon, place_id, or a place name, in that
+// order, defaulting to the user's ClassPass city.
+func resolveSearchLocation(ctx context.Context, cp *classpass.Client, in searchInput, f *classpass.SearchFilters, out *searchOutput) error {
+	if in.Lat != nil && in.Lon != nil {
+		f.Lat, f.Lon = *in.Lat, *in.Lon
+		out.Location = fmt.Sprintf("%f,%f", f.Lat, f.Lon)
+
+		return nil
+	}
+
+	placeID := in.PlaceID
+	if placeID == "" && in.Location == "" {
+		home, err := cp.HomeLocation(ctx)
+		if err != nil {
+			return fmt.Errorf("no location given and the user's ClassPass city is unavailable: %w", err)
+		}
+
+		f.Lat, f.Lon = home.Lat, home.Lon
+		out.Location = home.Name
+
+		return nil
+	}
+
+	if placeID == "" {
+		candidates, err := placeCandidates(ctx, cp, in.Location, nil)
+		if err != nil {
+			return err
+		}
+
+		placeID = candidates[0].PlaceID
+		out.OtherLocations = candidates[1:]
+	}
+
+	uid, err := cp.UserID(ctx)
+	if err != nil {
+		return err
+	}
+
+	place, err := cp.ResolvePlace(ctx, uid, placeID)
+	if err != nil {
+		return err
+	}
+
+	f.Lat, f.Lon = place.Lat, place.Lon
+	f.RadiusKm = max(f.RadiusKm, place.RadiusKm)
+	out.Location = place.FormattedAddress
+	out.PlaceID = placeID
+
+	return nil
+}
+
+// resolveActivity maps a query to an activity whose name matches it. ClassPass ranks unrelated activities first
+// for venue names (e.g. "Free" for "B+TREE"), so the first suggestion alone is not trusted.
+func resolveActivity(ctx context.Context, cp *classpass.Client, query string, lat, lon float64) (*classpass.Activity, error) {
+	acts, venues, err := cp.Keywords(ctx, query, lat, lon)
+	if err != nil {
+		return nil, err
+	}
+
+	q := strings.ToLower(strings.TrimSpace(query))
+	for i, a := range acts {
+		name := strings.ToLower(a.Name)
+		if name != "" && (strings.Contains(name, q) || strings.Contains(q, name)) {
+			return &acts[i], nil
+		}
+	}
+
+	if len(venues) > 0 {
+		var names []string
+		for _, v := range venues[:min(len(venues), 3)] {
+			names = append(names, fmt.Sprintf("%s (venue_id %d)", strings.TrimSpace(v.Name+" "+v.Subtitle), v.ID))
+		}
+
+		return nil, fmt.Errorf("%q is not an activity but matches venues: %s. Use list_slots or get_venue with a venue_id", query, strings.Join(names, ", "))
+	}
+
+	return nil, fmt.Errorf("no activity matches %q; try a broader term, or omit query to browse everything nearby", query)
 }
 
 // fetchVenues runs the search for each day and merges a venue's classes and slots across days. next is the

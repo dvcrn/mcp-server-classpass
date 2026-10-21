@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -36,10 +37,14 @@ type Client struct {
 	password  string
 	sessionID string
 
+	// loginMu serializes logins so concurrent 401s refresh the token once.
+	loginMu sync.Mutex
+
 	mu     sync.Mutex
 	token  string
 	userID int64
-	home   *LatLon
+	home   *Home
+	places map[string]*Place
 }
 
 // New returns a client that uses token if set, otherwise logs in with username/password on first use.
@@ -48,7 +53,7 @@ func New(token, username, password string) *Client {
 
 	return &Client{
 		BaseURL:   DefaultBaseURL,
-		http:      &http.Client{Jar: jar},
+		http:      &http.Client{Jar: jar, Timeout: 30 * time.Second},
 		username:  username,
 		password:  password,
 		sessionID: strings.ToUpper(rand.Text()),
@@ -92,15 +97,18 @@ func (c *Client) currentToken() string {
 
 // do sends an authenticated request, logging in first if needed and once more on a 401.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	if c.currentToken() == "" {
-		if err := c.Login(ctx); err != nil {
+	token := c.currentToken()
+	if token == "" {
+		if err := c.relogin(ctx, ""); err != nil {
 			return err
 		}
+
+		token = c.currentToken()
 	}
 
-	err := c.send(ctx, method, path, c.currentToken(), body, out)
+	err := c.send(ctx, method, path, token, body, out)
 	if errors.Is(err, errUnauthorized) && c.canLogin() {
-		if err := c.Login(ctx); err != nil {
+		if err := c.relogin(ctx, token); err != nil {
 			return err
 		}
 
@@ -108,6 +116,18 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	return err
+}
+
+// relogin logs in unless another request already replaced the stale token while this one waited.
+func (c *Client) relogin(ctx context.Context, stale string) error {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+
+	if c.currentToken() != stale {
+		return nil
+	}
+
+	return c.Login(ctx)
 }
 
 func (c *Client) send(ctx context.Context, method, path, token string, body, out any) error {
@@ -221,12 +241,23 @@ func (c *Client) CreditsRemaining(ctx context.Context, userID int64) (int, error
 	return out.Data.CreditBalance.CreditsRemaining, nil
 }
 
+// UpcomingBookings returns the user's upcoming reservations, soonest first.
 func (c *Client) UpcomingBookings(ctx context.Context) ([]Booking, error) {
+	return c.bookings(ctx, true)
+}
+
+// AllBookings returns the user's most recent 20 reservations, past and upcoming, newest first.
+func (c *Client) AllBookings(ctx context.Context) ([]Booking, error) {
+	return c.bookings(ctx, false)
+}
+
+func (c *Client) bookings(ctx context.Context, upcomingOnly bool) ([]Booking, error) {
 	var out struct {
 		Bookings []Booking `json:"bookings"`
 	}
 
-	if err := c.do(ctx, http.MethodGet, "/bff/v1/users/me/bookings?upcoming_only=true", nil, &out); err != nil {
+	path := fmt.Sprintf("/bff/v1/users/me/bookings?upcoming_only=%t", upcomingOnly)
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 
@@ -254,8 +285,17 @@ func (c *Client) LocationAutocomplete(ctx context.Context, query string, near *L
 	return out.Data.Predictions, nil
 }
 
-// ResolvePlace geocodes a place id. ClassPass only exposes this by adding the place to the user's location history.
+// ResolvePlace geocodes a place id. ClassPass only exposes this by adding the place to the user's location history,
+// so results are cached to write each place at most once per client.
 func (c *Client) ResolvePlace(ctx context.Context, userID int64, placeID string) (*Place, error) {
+	c.mu.Lock()
+	cached := c.places[placeID]
+	c.mu.Unlock()
+
+	if cached != nil {
+		return cached, nil
+	}
+
 	var out struct {
 		Data struct {
 			Item Place `json:"location_history_item"`
@@ -267,11 +307,19 @@ func (c *Client) ResolvePlace(ctx context.Context, userID int64, placeID string)
 		return nil, err
 	}
 
+	c.mu.Lock()
+	if c.places == nil {
+		c.places = map[string]*Place{}
+	}
+
+	c.places[placeID] = &out.Data.Item
+	c.mu.Unlock()
+
 	return &out.Data.Item, nil
 }
 
-// Activities returns the activity categories matching query near the given point.
-func (c *Client) Activities(ctx context.Context, query string, lat, lon float64) ([]Activity, error) {
+// Keywords returns the activity categories and venues matching query near the given point, best first.
+func (c *Client) Keywords(ctx context.Context, query string, lat, lon float64) ([]Activity, []VenueMatch, error) {
 	var out struct {
 		Data struct {
 			Results []struct {
@@ -287,24 +335,28 @@ func (c *Client) Activities(ctx context.Context, query string, lat, lon float64)
 		"full_text_search": map[string]any{},
 	}
 	if err := c.do(ctx, http.MethodPost, "/unisearch/v1/keyword/autocomplete", body, &out); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	// Entries of other result types (venues, classes) use numeric ids, so only activities are decoded.
+	// Result types disagree on the id type (activity ids are strings, venue ids numbers), so each is decoded separately.
+	var acts []Activity
+	var venues []VenueMatch
 	for _, r := range out.Data.Results {
-		if r.Type != "activities" {
-			continue
+		var err error
+		switch r.Type {
+		case "activities":
+			err = json.Unmarshal(r.Entries, &acts)
+
+		case "venues":
+			err = json.Unmarshal(r.Entries, &venues)
 		}
 
-		var acts []Activity
-		if err := json.Unmarshal(r.Entries, &acts); err != nil {
-			return nil, fmt.Errorf("classpass: decode activities: %w", err)
+		if err != nil {
+			return nil, nil, fmt.Errorf("classpass: decode %s: %w", r.Type, err)
 		}
-
-		return acts, nil
 	}
 
-	return nil, nil
+	return acts, venues, nil
 }
 
 // Search returns one page of venues within RadiusKm of the point, with their bookable schedules on Date.
@@ -540,8 +592,8 @@ func (c *Client) CancelReservation(ctx context.Context, reservationID int64) (*C
 	return &out, nil
 }
 
-// HomeLocation returns the center of the city the user's ClassPass account is set to, fetched once per client.
-func (c *Client) HomeLocation(ctx context.Context) (*LatLon, error) {
+// HomeLocation returns the city the user's ClassPass account is set to, fetched once per client.
+func (c *Client) HomeLocation(ctx context.Context) (*Home, error) {
 	c.mu.Lock()
 	home := c.home
 	c.mu.Unlock()
@@ -557,6 +609,8 @@ func (c *Client) HomeLocation(ctx context.Context) (*LatLon, error) {
 
 	var out struct {
 		Location struct {
+			Name     string `json:"name"`
+			Timezone string `json:"timezone"`
 			Centroid struct {
 				Latitude  float64 `json:"latitude"`
 				Longitude float64 `json:"longitude"`
@@ -568,7 +622,12 @@ func (c *Client) HomeLocation(ctx context.Context) (*LatLon, error) {
 		return nil, err
 	}
 
-	home = &LatLon{Lat: out.Location.Centroid.Latitude, Lon: out.Location.Centroid.Longitude}
+	l := out.Location
+	home = &Home{
+		Name:     l.Name,
+		Timezone: l.Timezone,
+		LatLon:   LatLon{Lat: l.Centroid.Latitude, Lon: l.Centroid.Longitude},
+	}
 
 	c.mu.Lock()
 	c.home = home

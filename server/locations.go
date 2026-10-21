@@ -54,7 +54,9 @@ func (h *handlers) searchLocations(ctx context.Context, _ *mcp.CallToolRequest, 
 // which is how the app ranks matches; lookups still work without it if that call fails.
 func placeCandidates(ctx context.Context, cp *classpass.Client, query string, near *classpass.LatLon) ([]placeCandidate, error) {
 	if near == nil {
-		near, _ = cp.HomeLocation(ctx)
+		if home, err := cp.HomeLocation(ctx); err == nil {
+			near = &home.LatLon
+		}
 	}
 
 	preds, err := cp.LocationAutocomplete(ctx, query, near)

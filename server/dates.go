@@ -1,18 +1,22 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/dvcrn/mcp-server-classpass/classpass"
 )
 
 // maxDays caps date ranges so one tool call fans out to at most this many days of upstream requests.
 const maxDays = 4
 
-// parseDate validates a YYYY-MM-DD date, defaulting to today.
-func parseDate(date string) (string, error) {
+// parseDate validates a YYYY-MM-DD date, defaulting to today in the user's ClassPass city so "today" does not
+// depend on the timezone of the machine running the server.
+func parseDate(ctx context.Context, cp *classpass.Client, date string) (string, error) {
 	if date == "" {
-		return time.Now().Format(time.DateOnly), nil
+		return time.Now().In(homeZone(ctx, cp)).Format(time.DateOnly), nil
 	}
 
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
@@ -20,6 +24,21 @@ func parseDate(date string) (string, error) {
 	}
 
 	return date, nil
+}
+
+// homeZone returns the timezone of the user's ClassPass city, falling back to the server's local zone.
+func homeZone(ctx context.Context, cp *classpass.Client) *time.Location {
+	home, err := cp.HomeLocation(ctx)
+	if err != nil {
+		return time.Local
+	}
+
+	loc, err := time.LoadLocation(home.Timezone)
+	if err != nil {
+		return time.Local
+	}
+
+	return loc
 }
 
 // dateRange returns every day from start to end inclusive; an empty end means just start.

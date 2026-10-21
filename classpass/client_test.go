@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newTestClient(t *testing.T, token, user, pass string, h http.HandlerFunc) *Client {
@@ -87,18 +90,25 @@ func TestUnauthorizedWithoutCredentials(t *testing.T) {
 	}
 }
 
-func TestActivitiesSkipsNumericIDEntries(t *testing.T) {
+func TestKeywordsDecodesActivitiesAndVenues(t *testing.T) {
 	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"status":200,"data":{"results":[
+			{"type":"full_text_search","entries":[{"type":"full_text_search_term","id":null}]},
 			{"type":"activities","entries":[{"type":"activity","id":"1145","name":"Massage"}]},
-			{"type":"venues","entries":[{"type":"venue","id":282110,"name":"B+TREE"}]}]}}`)
+			{"type":"venues","entries":[{"type":"venue","id":282110,"name":"B+TREE","subtitle":"Sangenjaya","distance":1.1}]}]}}`)
 	})
-	acts, err := c.Activities(context.Background(), "massage", 35.6, 139.6)
+
+	acts, venues, err := c.Keywords(context.Background(), "massage", 35.6, 139.6)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(acts) != 1 || acts[0] != (Activity{ID: "1145", Name: "Massage"}) {
 		t.Errorf("activities = %+v", acts)
+	}
+
+	if len(venues) != 1 || venues[0] != (VenueMatch{ID: 282110, Name: "B+TREE", Subtitle: "Sangenjaya", DistanceKm: 1.1}) {
+		t.Errorf("venues = %+v", venues)
 	}
 }
 
@@ -214,5 +224,58 @@ func TestReserveRejectsNonZeroState(t *testing.T) {
 
 	if _, err := c.Reserve(context.Background(), 42, 23); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestConcurrentUnauthorizedLogsInOnce(t *testing.T) {
+	var logins atomic.Int32
+	c := newTestClient(t, "stale", "u@example.com", "pw", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/auth/login" {
+			logins.Add(1)
+			time.Sleep(20 * time.Millisecond)
+			io.WriteString(w, `{"token":"fresh"}`)
+
+			return
+		}
+
+		if r.Header.Get("Authorization") != "Token fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		io.WriteString(w, `{"id":42}`)
+	})
+
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Go(func() {
+			if _, err := c.Profile(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if n := logins.Load(); n != 1 {
+		t.Errorf("logins = %d, want 1", n)
+	}
+}
+
+func TestResolvePlaceCached(t *testing.T) {
+	var puts int
+	c := newTestClient(t, "tok", "", "", func(w http.ResponseWriter, r *http.Request) {
+		puts++
+		io.WriteString(w, `{"data":{"location_history_item":{"lat":35.6,"lon":139.7}}}`)
+	})
+
+	for range 3 {
+		if _, err := c.ResolvePlace(context.Background(), 5, "P"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if puts != 1 {
+		t.Errorf("location history writes = %d, want 1", puts)
 	}
 }

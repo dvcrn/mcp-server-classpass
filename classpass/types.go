@@ -60,6 +60,21 @@ type LatLon struct {
 	Lon float64 `json:"lon"`
 }
 
+// Home is the city the user's ClassPass account is set to.
+type Home struct {
+	LatLon
+	Name     string
+	Timezone string
+}
+
+// VenueMatch is a venue found by name.
+type VenueMatch struct {
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	Subtitle   string  `json:"subtitle"`
+	DistanceKm float64 `json:"distance"`
+}
+
 type Place struct {
 	Name             string  `json:"name"`
 	FormattedAddress string  `json:"formatted_address"`

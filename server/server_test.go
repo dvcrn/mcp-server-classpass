@@ -54,7 +54,7 @@ func TestToolsRegistered(t *testing.T) {
 	}
 
 	slices.Sort(names)
-	want := []string{"add_bookmark", "book_slot", "cancel_reservation", "get_account", "get_slot", "get_venue", "list_bookmarks", "list_reservations", "list_slots", "remove_bookmark", "search_classes", "search_locations"}
+	want := []string{"add_bookmark", "book_slot", "cancel_reservation", "get_account", "get_slot", "get_venue", "list_bookmarks", "list_reservations", "list_slots", "remove_bookmark", "search_classes", "search_locations", "search_venues"}
 	if !slices.Equal(names, want) {
 		t.Errorf("tools = %v, want %v", names, want)
 	}
@@ -612,7 +612,7 @@ func TestListSlotsRefusesLargeVenue(t *testing.T) {
 	var requests []string
 	cs := connect(t, fakeSlotsAPI(t, maxVenueClasses+1, &requests))
 
-	if _, res := callTool[listSlotsOutput](t, cs, "list_slots", map[string]any{"venue_id": 1}); !res.IsError {
+	if _, res := callTool[listSlotsOutput](t, cs, "list_slots", map[string]any{"venue_id": 1, "date": "2026-10-22"}); !res.IsError {
 		t.Error("expected error for a venue with too many classes")
 	}
 
@@ -690,5 +690,115 @@ func TestOptionalNumbersNotNullable(t *testing.T) {
 		if strings.Contains(string(b), `"null"`) {
 			t.Errorf("%s input schema declares null: %s", tool.Name, b)
 		}
+	}
+}
+
+// homeHandler serves the profile and ClassPass city lookups; other paths go to next.
+func homeHandler(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/profile":
+			io.WriteString(w, `{"id":5}`)
+
+		case "/v1/gls/user/5/location":
+			io.WriteString(w, `{"location":{"name":"Setagaya City","timezone":"Asia/Tokyo","centroid":{"latitude":35.64,"longitude":139.65}}}`)
+
+		default:
+			next(w, r)
+		}
+	}
+}
+
+const keywordsJSON = `{"data":{"results":[
+	{"type":"activities","entries":[{"id":"activity-599","name":"Free"},{"id":"1145","name":"Massage"}]},
+	{"type":"venues","entries":[{"id":282110,"name":"B+TREE","subtitle":"Sangenjaya","distance":1.1}]}]}}`
+
+func TestSearchClassesVenueNameAndHomeDefault(t *testing.T) {
+	var searched []map[string]any
+	cs := connect(t, homeHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/unisearch/v1/keyword/autocomplete":
+			io.WriteString(w, keywordsJSON)
+
+		case "/unisearch/v3/layout/search":
+			var body struct {
+				SearchRequest struct {
+					Filters map[string]any `json:"filters"`
+				} `json:"search_request"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			searched = append(searched, body.SearchRequest.Filters)
+			io.WriteString(w, `{"nested_search":{"venues":[]}}`)
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	// A venue name must not silently match the unrelated first activity.
+	_, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "B+TREE", "date": "2026-10-22"})
+	if !res.IsError {
+		t.Fatal("venue name query should fail")
+	}
+
+	if msg := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(msg, "282110") {
+		t.Errorf("error should point at the venue: %s", msg)
+	}
+
+	out, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "massage", "date": "2026-10-22"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if out.Activity != "Massage" || out.Location != "Setagaya City" {
+		t.Errorf("output = %+v", out)
+	}
+
+	if len(searched) != 1 || searched[0]["lat"] != 35.64 {
+		t.Errorf("searched = %v", searched)
+	}
+}
+
+func TestSearchVenues(t *testing.T) {
+	cs := connect(t, homeHandler(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, keywordsJSON)
+	}))
+
+	out, res := callTool[searchVenuesOutput](t, cs, "search_venues", map[string]any{"query": "B+TREE"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if len(out.Venues) != 1 || out.Venues[0] != (venueMatch{VenueID: 282110, Name: "B+TREE Sangenjaya", DistanceKm: 1.1}) {
+		t.Errorf("venues = %+v", out.Venues)
+	}
+}
+
+func TestListReservationsIncludePast(t *testing.T) {
+	var queries []string
+	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("upcoming_only"))
+		io.WriteString(w, `{"bookings":[]}`)
+	})
+
+	callTool[reservationsOutput](t, cs, "list_reservations", map[string]any{})
+	callTool[reservationsOutput](t, cs, "list_reservations", map[string]any{"include_past": true})
+
+	if !slices.Equal(queries, []string{"true", "false"}) {
+		t.Errorf("upcoming_only = %v", queries)
+	}
+}
+
+func TestBookRefusesPriceAboveMaxCredits(t *testing.T) {
+	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bff/v2/reservation_modal/42" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+
+		io.WriteString(w, `{"state":0,"modal":{"pricing":{"credits":23},"footer":{"cta":[{"type":"credits","enabled":true}]}}}`)
+	})
+
+	if _, res := callTool[bookOutput](t, cs, "book_slot", map[string]any{"slot_id": 42, "max_credits": 20}); !res.IsError {
+		t.Error("expected error when the price exceeds max_credits")
 	}
 }

@@ -31,7 +31,7 @@ func tools(s *mcp.Server, h *handlers) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_reservations",
-		Description: "List the user's upcoming reservations with reservation_id and slot_id. Times are venue-local.",
+		Description: "List the user's upcoming reservations with reservation_id and slot_id, or past ones too with include_past. Times are venue-local.",
 		Annotations: readOnly,
 	}, h.listReservations)
 
@@ -46,10 +46,19 @@ func tools(s *mcp.Server, h *handlers) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_classes",
-		Description: "Discover classes near a place on one day, optionally filtered by activity, start time window, and credit cost. " +
+		Description: "Discover classes near a place over one to four days, optionally filtered by activity, start time window, and credit cost. " +
+			"Defaults to the user's ClassPass city when no location is given. " +
 			"Returns venues nearest first, each with classes and bookable time slots (slot_id, credits). Times are venue-local.",
 		InputSchema: inputSchema[searchInput](),
 	}, h.searchClasses)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "search_venues",
+		Description: "Find venues by name, e.g. a studio the user mentions. Returns venue_id for get_venue and list_slots. " +
+			"Use search_classes instead to search by activity.",
+		Annotations: readOnly,
+		InputSchema: inputSchema[searchVenuesInput](),
+	}, h.searchVenues)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_venue",
@@ -91,8 +100,9 @@ func tools(s *mcp.Server, h *handlers) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "book_slot",
 		Description: "Book a time slot with credits. This spends credits on the user's account; " +
-			"confirm the class, time, and credit cost with the user before calling. " +
-			"Fails without booking if the slot costs more credits than the user has left.",
+			"confirm the class, time, and credit cost with the user before calling, and pass that cost as max_credits. " +
+			"Fails without booking if the price rose above max_credits or the user lacks the credits.",
+		InputSchema: inputSchema[bookInput](),
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(false)},
 	}, h.bookSlot)
 

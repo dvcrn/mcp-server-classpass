@@ -9,7 +9,8 @@ import (
 )
 
 type bookInput struct {
-	SlotID int64 `json:"slot_id" jsonschema:"id of the time slot to book"`
+	SlotID     int64 `json:"slot_id" jsonschema:"id of the time slot to book"`
+	MaxCredits *int  `json:"max_credits,omitempty" jsonschema:"credit cost the user agreed to; booking fails if the current price is higher"`
 }
 
 type bookOutput struct {
@@ -30,6 +31,9 @@ func (h *handlers) bookSlot(ctx context.Context, _ *mcp.CallToolRequest, in book
 	}
 
 	credits := modal.Modal.Pricing.Credits
+	if in.MaxCredits != nil && credits > *in.MaxCredits {
+		return nil, bookOutput{}, fmt.Errorf("slot %d now costs %d credits, more than the agreed %d; ask the user again", in.SlotID, credits, *in.MaxCredits)
+	}
 
 	uid, err := h.cp.UserID(ctx)
 	if err != nil {

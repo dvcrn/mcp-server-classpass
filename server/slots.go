@@ -36,7 +36,7 @@ type listSlotsOutput struct {
 }
 
 func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in listSlotsInput) (*mcp.CallToolResult, listSlotsOutput, error) {
-	date, err := parseDate(in.Date)
+	date, err := parseDate(ctx, h.cp, in.Date)
 	if err != nil {
 		return nil, listSlotsOutput{}, err
 	}

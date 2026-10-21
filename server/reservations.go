@@ -19,12 +19,21 @@ type reservation struct {
 	Status        string `json:"status"`
 }
 
+type reservationsInput struct {
+	IncludePast bool `json:"include_past,omitempty" jsonschema:"also list past reservations (the 20 most recent overall, newest first); useful to rebook a previous visit"`
+}
+
 type reservationsOutput struct {
 	Reservations []reservation `json:"reservations"`
 }
 
-func (h *handlers) listReservations(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, reservationsOutput, error) {
-	bookings, err := h.cp.UpcomingBookings(ctx)
+func (h *handlers) listReservations(ctx context.Context, _ *mcp.CallToolRequest, in reservationsInput) (*mcp.CallToolResult, reservationsOutput, error) {
+	list := h.cp.UpcomingBookings
+	if in.IncludePast {
+		list = h.cp.AllBookings
+	}
+
+	bookings, err := list(ctx)
 	if err != nil {
 		return nil, reservationsOutput{}, err
 	}
