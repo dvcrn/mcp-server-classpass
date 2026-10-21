@@ -370,8 +370,7 @@ func (c *Client) Keywords(ctx context.Context, query string, lat, lon float64) (
 // Search returns one page of venues within RadiusKm of the point, with their bookable schedules on Date.
 // Without an Activity it returns every venue in range. Pass the returned page's Cursor to fetch the next page.
 func (c *Client) Search(ctx context.Context, f SearchFilters, cursor string) (*SearchPage, error) {
-	dLat := f.RadiusKm / 111.0
-	dLon := f.RadiusKm / (111.0 * math.Cos(f.Lat*math.Pi/180))
+	south, west, north, east := bounds(f.Lat, f.Lon, f.RadiusKm)
 
 	filters := map[string]any{
 		"find_next_available":  true,
@@ -379,7 +378,7 @@ func (c *Client) Search(ctx context.Context, f SearchFilters, cursor string) (*S
 		"lat":                  f.Lat,
 		"lon":                  f.Lon,
 		"date":                 f.Date,
-		"map_bounds":           fmt.Sprintf("%f,%f,%f,%f", f.Lon-dLon, f.Lat-dLat, f.Lon+dLon, f.Lat+dLat),
+		"map_bounds":           fmt.Sprintf("%f,%f,%f,%f", west, south, east, north),
 	}
 
 	// The tag is what filters; full_text_search alone is ignored by the API.
@@ -699,8 +698,7 @@ func (c *Client) Tags(ctx context.Context) ([]Tag, error) {
 // SearchVenues returns up to Count venues tagged TagID near the point. Unlike Search it carries no classes or
 // slots, so one request covers far more venues.
 func (c *Client) SearchVenues(ctx context.Context, f VenueSearchFilters) (*VenueSearchPage, error) {
-	dLat := f.RadiusKm / 111.0
-	dLon := f.RadiusKm / (111.0 * math.Cos(f.Lat*math.Pi/180))
+	south, west, north, east := bounds(f.Lat, f.Lon, f.RadiusKm)
 
 	body := map[string]any{
 		"sort_by_is_open":         true,
@@ -708,10 +706,10 @@ func (c *Client) SearchVenues(ctx context.Context, f VenueSearchFilters) (*Venue
 		"find_next_available":     true,
 		"lat":                     f.Lat,
 		"lon":                     f.Lon,
-		"viewport_south_west_lat": f.Lat - dLat,
-		"viewport_south_west_lon": f.Lon - dLon,
-		"viewport_north_east_lat": f.Lat + dLat,
-		"viewport_north_east_lon": f.Lon + dLon,
+		"viewport_south_west_lat": south,
+		"viewport_south_west_lon": west,
+		"viewport_north_east_lat": north,
+		"viewport_north_east_lon": east,
 		"date":                    f.Date,
 		"tag":                     []string{f.TagID},
 		"count":                   f.Count,
@@ -723,4 +721,12 @@ func (c *Client) SearchVenues(ctx context.Context, f VenueSearchFilters) (*Venue
 	}
 
 	return &page, nil
+}
+
+// bounds returns the box extending radiusKm from a point, at about 111 km per degree of latitude.
+func bounds(lat, lon, radiusKm float64) (south, west, north, east float64) {
+	dLat := radiusKm / 111.0
+	dLon := radiusKm / (111.0 * math.Cos(lat*math.Pi/180))
+
+	return lat - dLat, lon - dLon, lat + dLat, lon + dLon
 }

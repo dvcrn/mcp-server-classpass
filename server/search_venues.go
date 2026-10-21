@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -116,7 +115,7 @@ func (h *handlers) searchVenues(ctx context.Context, _ *mcp.CallToolRequest, in 
 		open := v.IsOpen
 		out.Venues = append(out.Venues, foundVenue{
 			VenueID:      v.ID,
-			Name:         strings.TrimSpace(v.Name + " " + v.Subtitle),
+			Name:         venueName(v.Name, v.Subtitle),
 			Activities:   v.Activities,
 			DistanceKm:   v.DistanceKm,
 			Rating:       v.Rating,
@@ -147,11 +146,7 @@ func venuesByName(ctx context.Context, cp *classpass.Client, name string, c cent
 	}
 
 	for _, v := range venues {
-		out.Venues = append(out.Venues, foundVenue{
-			VenueID:    v.ID,
-			Name:       strings.TrimSpace(v.Name + " " + v.Subtitle),
-			DistanceKm: v.DistanceKm,
-		})
+		out.Venues = append(out.Venues, toFoundVenue(v))
 	}
 
 	if len(out.Venues) == 0 {
@@ -159,4 +154,8 @@ func venuesByName(ctx context.Context, cp *classpass.Client, name string, c cent
 	}
 
 	return out, nil
+}
+
+func toFoundVenue(m classpass.VenueMatch) foundVenue {
+	return foundVenue{VenueID: m.ID, Name: venueName(m.Name, m.Subtitle), DistanceKm: m.DistanceKm}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
@@ -137,12 +138,21 @@ func inputSchema[T any]() *jsonschema.Schema {
 
 	for _, p := range s.Properties {
 		if len(p.Types) == 2 && slices.Contains(p.Types, "null") {
-			p.Type = slices.DeleteFunc(slices.Clone(p.Types), func(t string) bool { return t == "null" })[0]
+			p.Type = p.Types[0]
+			if p.Type == "null" {
+				p.Type = p.Types[1]
+			}
+
 			p.Types = nil
 		}
 	}
 
 	return s
+}
+
+// venueName joins a venue's name and subtitle, e.g. "B+TREE Sangenjaya".
+func venueName(name, subtitle string) string {
+	return strings.TrimSpace(name + " " + subtitle)
 }
 
 func joinAddress(a classpass.Address) string {
@@ -166,6 +176,16 @@ func localTime(ts, tz string) string {
 	}
 
 	return t.In(loc).Format(time.RFC3339)
+}
+
+// venueLocation loads a venue's timezone, falling back to UTC.
+func venueLocation(tz string) *time.Location {
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+
+	return loc
 }
 
 // unixLocal formats a unix timestamp in the venue's timezone, falling back to UTC.

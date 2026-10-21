@@ -62,6 +62,8 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 		return nil, listSlotsOutput{}, err
 	}
 
+	out := listSlotsOutput{Date: days[0], EndDate: days[len(days)-1], Classes: []class{}}
+
 	classIDs := []int64{in.ClassID}
 	if in.ClassID == 0 {
 		offerings, err := h.cp.VenueOfferings(ctx, in.VenueID)
@@ -75,7 +77,6 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 
 		// Fetching slots costs a request per class, so large venues (often food menus) return their classes to pick from.
 		if len(offerings) > maxVenueClasses {
-			out := listSlotsOutput{Date: days[0], EndDate: days[len(days)-1], Classes: []class{}}
 			for _, o := range offerings {
 				// Descriptions are left out: a 50-item menu with descriptions would dwarf the rest of the response.
 				choice := toOffering(o)
@@ -88,22 +89,12 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 			return nil, out, nil
 		}
 
-		classIDs = classIDs[:0]
-		for _, o := range offerings {
-			classIDs = append(classIDs, o.ID)
-		}
+		classIDs = offeringIDs(offerings)
 	}
 
-	out := listSlotsOutput{Date: days[0], EndDate: days[len(days)-1], Classes: []class{}}
-	for _, id := range classIDs {
-		c, err := classSlots(ctx, h.cp, in.VenueID, id, days[0], days[len(days)-1], sf)
-		if err != nil {
-			return nil, listSlotsOutput{}, err
-		}
-
-		if len(c.Slots) > 0 {
-			out.Classes = append(out.Classes, c)
-		}
+	out.Classes, err = venueClasses(ctx, h.cp, in.VenueID, classIDs, days, sf)
+	if err != nil {
+		return nil, listSlotsOutput{}, err
 	}
 
 	if len(out.Classes) == 0 {
@@ -111,6 +102,32 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 	}
 
 	return nil, out, nil
+}
+
+// venueClasses collects the slots of each class and keeps the classes that have any.
+func venueClasses(ctx context.Context, cp *classpass.Client, venueID int64, classIDs []int64, days []string, sf slotFilter) ([]class, error) {
+	classes := []class{}
+	for _, id := range classIDs {
+		c, err := classSlots(ctx, cp, venueID, id, days[0], days[len(days)-1], sf)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(c.Slots) > 0 {
+			classes = append(classes, c)
+		}
+	}
+
+	return classes, nil
+}
+
+func offeringIDs(offerings []classpass.Offering) []int64 {
+	ids := make([]int64, len(offerings))
+	for i, o := range offerings {
+		ids[i] = o.ID
+	}
+
+	return ids
 }
 
 // classSlots collects one class's slots from start to end, capped at sf.perClass. Each upstream page starts at a
@@ -164,14 +181,4 @@ func classSlots(ctx context.Context, cp *classpass.Client, venueID, classID int6
 	slices.SortFunc(c.Slots, func(a, b slot) int { return cmp.Compare(a.Start, b.Start) })
 
 	return c, nil
-}
-
-// venueLocation loads a venue's timezone, falling back to UTC.
-func venueLocation(tz string) *time.Location {
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		return time.UTC
-	}
-
-	return loc
 }

@@ -61,7 +61,7 @@ func dateRange(start, end string) ([]string, error) {
 		return nil, errors.New("end_date must not be before date")
 	}
 
-	n := int(e.Sub(s).Hours()/24) + 1
+	n := int(e.Sub(s)/(24*time.Hour)) + 1
 	if n > maxDays {
 		return nil, fmt.Errorf("end_date can be at most %d days after date", maxDays-1)
 	}

@@ -248,11 +248,7 @@ func emptyNote(ctx context.Context, cp *classpass.Client, f classpass.SearchFilt
 // directly, the way list_slots would; several matches are returned for the caller to pick from.
 func searchVenueByName(ctx context.Context, cp *classpass.Client, matches []classpass.VenueMatch, days []string, sf slotFilter, out searchOutput) (searchOutput, error) {
 	for _, m := range matches {
-		out.MatchedVenues = append(out.MatchedVenues, foundVenue{
-			VenueID:    m.ID,
-			Name:       strings.TrimSpace(m.Name + " " + m.Subtitle),
-			DistanceKm: m.DistanceKm,
-		})
+		out.MatchedVenues = append(out.MatchedVenues, toFoundVenue(m))
 	}
 
 	if len(matches) > 1 {
@@ -277,21 +273,14 @@ func searchVenueByName(ctx context.Context, cp *classpass.Client, matches []clas
 		return out, nil
 	}
 
-	v := venue{VenueID: m.VenueID, Name: m.Name, DistanceKm: m.DistanceKm, Classes: []class{}}
-	for _, o := range offerings {
-		c, err := classSlots(ctx, cp, m.VenueID, o.ID, days[0], days[len(days)-1], sf)
-		if err != nil {
-			return searchOutput{}, err
-		}
-
-		if len(c.Slots) > 0 {
-			v.Classes = append(v.Classes, c)
-		}
+	classes, err := venueClasses(ctx, cp, m.VenueID, offeringIDs(offerings), days, sf)
+	if err != nil {
+		return searchOutput{}, err
 	}
 
 	out.MatchedVenues = nil
-	out.Venues = []venue{v}
-	if len(v.Classes) == 0 {
+	out.Venues = []venue{{VenueID: m.VenueID, Name: m.Name, DistanceKm: m.DistanceKm, Classes: classes}}
+	if len(classes) == 0 {
 		out.Note = "The query names this venue, but it has no bookable slots for these dates and filters."
 	}
 
@@ -420,14 +409,9 @@ func mergeClasses(into, from []classpass.Class) []classpass.Class {
 func toVenue(v classpass.Venue, sf slotFilter) (venue, bool) {
 	loc := venueLocation(v.TZ)
 
-	name := v.Name
-	if v.Subtitle != "" {
-		name += " " + v.Subtitle
-	}
-
 	ov := venue{
 		VenueID:    v.ID,
-		Name:       name,
+		Name:       venueName(v.Name, v.Subtitle),
 		Address:    joinAddress(v.Address),
 		DistanceKm: v.DistanceKm,
 		Rating:     v.Ratings.Mean,

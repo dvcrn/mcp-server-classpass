@@ -25,12 +25,7 @@ func (h *handlers) listBookmarks(ctx context.Context, _ *mcp.CallToolRequest, _ 
 
 	out := bookmarksOutput{Bookmarks: []bookmark{}}
 	for _, v := range venues {
-		name := v.Name
-		if v.Subtitle != "" {
-			name += " " + v.Subtitle
-		}
-
-		out.Bookmarks = append(out.Bookmarks, bookmark{VenueID: v.ID, Name: name, Address: joinAddress(v.Address)})
+		out.Bookmarks = append(out.Bookmarks, bookmark{VenueID: v.ID, Name: venueName(v.Name, v.Subtitle), Address: joinAddress(v.Address)})
 	}
 
 	return nil, out, nil

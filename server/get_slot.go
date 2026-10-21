@@ -41,11 +41,6 @@ func (h *handlers) getSlot(ctx context.Context, _ *mcp.CallToolRequest, in getSl
 		return nil, slotDetail{}, err
 	}
 
-	name := s.Venue.Name
-	if s.Venue.Subtitle != "" {
-		name += " " + s.Venue.Subtitle
-	}
-
 	return nil, slotDetail{
 		SlotID:             s.ID,
 		ClassID:            s.Class.ID,
@@ -55,7 +50,7 @@ func (h *handlers) getSlot(ctx context.Context, _ *mcp.CallToolRequest, in getSl
 		Description:        s.Class.Description,
 		WhatToBring:        s.Class.WhatToBring,
 		VenueID:            s.Venue.ID,
-		VenueName:          name,
+		VenueName:          venueName(s.Venue.Name, s.Venue.Subtitle),
 		Address:            joinAddress(s.Venue.Address),
 		Start:              unixLocal(int64(s.StartTime), s.Venue.TZ),
 		End:                unixLocal(int64(s.EndTime), s.Venue.TZ),
