@@ -3,10 +3,12 @@ package server
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
+	"github.com/dvcrn/mcp-server-classpass/classpass"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -20,7 +22,7 @@ const (
 
 type listSlotsInput struct {
 	VenueID    int64  `json:"venue_id" jsonschema:"venue id"`
-	ClassID    int64  `json:"class_id,omitempty" jsonschema:"class id from get_venue or search_classes; omit to list every class at the venue (venues with at most 8 classes)"`
+	ClassID    int64  `json:"class_id,omitempty" jsonschema:"class id from get_venue or search_classes; omit to list every class at the venue (venues with more than 8 classes return their class list to pick from instead)"`
 	Date       string `json:"date,omitempty" jsonschema:"first day in YYYY-MM-DD; defaults to today"`
 	EndDate    string `json:"end_date,omitempty" jsonschema:"last day in YYYY-MM-DD, at most 3 days after date; defaults to date+3 for one class and to date when listing every class"`
 	TimeAfter  string `json:"time_after,omitempty" jsonschema:"earliest slot start, venue-local HH:MM, e.g. 07:30"`
@@ -32,7 +34,10 @@ type listSlotsOutput struct {
 	Date    string  `json:"date"`
 	EndDate string  `json:"end_date"`
 	Classes []class `json:"classes"`
-	Note    string  `json:"note,omitempty"`
+
+	// ClassChoices lists a large venue's classes, without slots, when no class_id was given.
+	ClassChoices []offering `json:"class_choices,omitempty"`
+	Note         string     `json:"note,omitempty"`
 }
 
 func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in listSlotsInput) (*mcp.CallToolResult, listSlotsOutput, error) {
@@ -60,12 +65,27 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 	classIDs := []int64{in.ClassID}
 	if in.ClassID == 0 {
 		offerings, err := h.cp.VenueOfferings(ctx, in.VenueID)
+		if errors.Is(err, classpass.ErrNotFound) {
+			return nil, listSlotsOutput{}, errors.New(noClassListNote)
+		}
+
 		if err != nil {
 			return nil, listSlotsOutput{}, err
 		}
 
+		// Fetching slots costs a request per class, so large venues (often food menus) return their classes to pick from.
 		if len(offerings) > maxVenueClasses {
-			return nil, listSlotsOutput{}, fmt.Errorf("venue %d offers %d classes; pass a class_id from get_venue", in.VenueID, len(offerings))
+			out := listSlotsOutput{Date: days[0], EndDate: days[len(days)-1], Classes: []class{}}
+			for _, o := range offerings {
+				// Descriptions are left out: a 50-item menu with descriptions would dwarf the rest of the response.
+				choice := toOffering(o)
+				choice.Description = ""
+				out.ClassChoices = append(out.ClassChoices, choice)
+			}
+
+			out.Note = fmt.Sprintf("This venue has %d classes. Call list_slots again with a class_id from class_choices.", len(offerings))
+
+			return nil, out, nil
 		}
 
 		classIDs = classIDs[:0]
@@ -76,7 +96,7 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 
 	out := listSlotsOutput{Date: days[0], EndDate: days[len(days)-1], Classes: []class{}}
 	for _, id := range classIDs {
-		c, err := h.classSlots(ctx, in.VenueID, id, days[0], days[len(days)-1], sf)
+		c, err := classSlots(ctx, h.cp, in.VenueID, id, days[0], days[len(days)-1], sf)
 		if err != nil {
 			return nil, listSlotsOutput{}, err
 		}
@@ -93,15 +113,15 @@ func (h *handlers) listSlots(ctx context.Context, _ *mcp.CallToolRequest, in lis
 	return nil, out, nil
 }
 
-// classSlots collects one class's slots from start to end. Each upstream page starts at a date and holds up to
-// 50 slots, so the next page starts on the last day seen and repeats are skipped.
-func (h *handlers) classSlots(ctx context.Context, venueID, classID int64, start, end string, sf slotFilter) (class, error) {
+// classSlots collects one class's slots from start to end, capped at sf.perClass. Each upstream page starts at a
+// date and holds up to 50 slots, so the next page starts on the last day seen and repeats are skipped.
+func classSlots(ctx context.Context, cp *classpass.Client, venueID, classID int64, start, end string, sf slotFilter) (class, error) {
 	c := class{ClassID: classID, Slots: []slot{}}
 	seen := map[int64]bool{}
 	date := start
 
 	for range maxSlotPages {
-		items, err := h.cp.ClassSchedules(ctx, venueID, classID, date)
+		items, err := cp.ClassSchedules(ctx, venueID, classID, date)
 		if err != nil {
 			return class{}, err
 		}
@@ -124,9 +144,16 @@ func (h *handlers) classSlots(ctx context.Context, venueID, classID int64, start
 
 			date = max(date, day)
 			c.Name = cmp.Or(c.Name, it.Class.Name)
-			if day >= start && sf.keep(it.Schedule, loc) {
-				c.Slots = append(c.Slots, toSlot(it.Schedule, it.Venue.TZ))
+			if day < start || !sf.keep(it.Schedule, loc) {
+				continue
 			}
+
+			if sf.perClass > 0 && len(c.Slots) == sf.perClass {
+				c.MoreSlots++
+				continue
+			}
+
+			c.Slots = append(c.Slots, toSlot(it.Schedule, it.Venue.TZ))
 		}
 
 		if past || added == 0 {

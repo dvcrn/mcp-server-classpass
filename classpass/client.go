@@ -28,6 +28,9 @@ const (
 
 var errUnauthorized = errors.New("classpass: unauthorized")
 
+// ErrNotFound reports a 404. Some venues return it for their class list even while their classes are bookable.
+var ErrNotFound = errors.New("classpass: not found")
+
 // Client talks to the ClassPass mobile API, impersonating the iOS app.
 // Cloudflare blocks curl's HTTP/2 fingerprint but accepts Go's default transport.
 type Client struct {
@@ -178,6 +181,10 @@ func (c *Client) send(ctx context.Context, method, path, token string, body, out
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return errUnauthorized
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %s %s", ErrNotFound, method, path)
 	}
 
 	if resp.StatusCode >= 300 {

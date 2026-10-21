@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,6 +23,8 @@ type placeCandidate struct {
 	Description string   `json:"description"`
 	PlaceID     string   `json:"place_id"`
 	Types       []string `json:"types,omitempty"`
+
+	mainText string
 }
 
 type locationsOutput struct {
@@ -70,8 +73,34 @@ func placeCandidates(ctx context.Context, cp *classpass.Client, query string, ne
 
 	var candidates []placeCandidate
 	for _, p := range preds[:min(len(preds), maxPlaceCandidates)] {
-		candidates = append(candidates, placeCandidate{Description: p.Description, PlaceID: p.PlaceID, Types: p.Types})
+		candidates = append(candidates, placeCandidate{Description: p.Description, PlaceID: p.PlaceID, Types: p.Types, mainText: p.MainText})
 	}
 
 	return candidates, nil
+}
+
+// isArea reports whether Google place types describe an area or station rather than a single business.
+func isArea(types []string) bool {
+	for _, t := range types {
+		switch {
+		case t == "political", t == "locality", t == "neighborhood", t == "colloquial_area", t == "postal_code",
+			t == "transit_station", t == "train_station", t == "subway_station",
+			strings.HasPrefix(t, "sublocality"), strings.HasPrefix(t, "administrative_area"):
+			return true
+		}
+	}
+
+	return false
+}
+
+// pickPlace returns the index of the best candidate for query: the first area, or a place named exactly like the
+// query (e.g. a landmark). It returns -1 when every candidate is an unrelated business, as for bare city names.
+func pickPlace(candidates []placeCandidate, query string) int {
+	for i, c := range candidates {
+		if isArea(c.Types) || strings.EqualFold(strings.TrimSpace(c.mainText), strings.TrimSpace(query)) {
+			return i
+		}
+	}
+
+	return -1
 }

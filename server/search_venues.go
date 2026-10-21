@@ -85,12 +85,16 @@ func (h *handlers) searchVenues(ctx context.Context, _ *mcp.CallToolRequest, in 
 
 	tagID, tagName := in.TagID, ""
 	if in.Activity != "" {
-		act, err := resolveActivity(ctx, h.cp, in.Activity, c.Lat, c.Lon)
+		m, err := resolveActivity(ctx, h.cp, in.Activity, c.Lat, c.Lon)
 		if err != nil {
 			return nil, searchVenuesOutput{}, err
 		}
 
-		tagID, tagName = act.ID, act.Name
+		if m.Activity == nil {
+			return nil, searchVenuesOutput{}, fmt.Errorf("%q matches venue names, not an activity; search with name instead", in.Activity)
+		}
+
+		tagID, tagName = m.Activity.ID, m.Activity.Name
 	} else {
 		tag, err := findTag(ctx, h.cp, tagID)
 		if err != nil {

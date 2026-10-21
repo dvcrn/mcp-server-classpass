@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,15 +15,6 @@ type bookmark struct {
 
 type bookmarksOutput struct {
 	Bookmarks []bookmark `json:"bookmarks"`
-}
-
-type bookmarkInput struct {
-	VenueID int64 `json:"venue_id" jsonschema:"venue id from search_classes, get_venue, or list_bookmarks"`
-}
-
-type bookmarkOutput struct {
-	VenueID    int64 `json:"venue_id"`
-	Bookmarked bool  `json:"bookmarked"`
 }
 
 func (h *handlers) listBookmarks(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, bookmarksOutput, error) {
@@ -44,39 +34,6 @@ func (h *handlers) listBookmarks(ctx context.Context, _ *mcp.CallToolRequest, _ 
 	}
 
 	return nil, out, nil
-}
-
-// addBookmark is idempotent: an already bookmarked venue is left as is.
-func (h *handlers) addBookmark(ctx context.Context, _ *mcp.CallToolRequest, in bookmarkInput) (*mcp.CallToolResult, bookmarkOutput, error) {
-	existing, err := h.findBookmark(ctx, in.VenueID)
-	if err != nil {
-		return nil, bookmarkOutput{}, err
-	}
-
-	if existing == nil {
-		if _, err := h.cp.AddBookmark(ctx, in.VenueID); err != nil {
-			return nil, bookmarkOutput{}, err
-		}
-	}
-
-	return nil, bookmarkOutput{VenueID: in.VenueID, Bookmarked: true}, nil
-}
-
-func (h *handlers) removeBookmark(ctx context.Context, _ *mcp.CallToolRequest, in bookmarkInput) (*mcp.CallToolResult, bookmarkOutput, error) {
-	existing, err := h.findBookmark(ctx, in.VenueID)
-	if err != nil {
-		return nil, bookmarkOutput{}, err
-	}
-
-	if existing == nil {
-		return nil, bookmarkOutput{}, fmt.Errorf("venue %d is not bookmarked", in.VenueID)
-	}
-
-	if err := h.cp.RemoveBookmark(ctx, existing.BookmarkID); err != nil {
-		return nil, bookmarkOutput{}, err
-	}
-
-	return nil, bookmarkOutput{VenueID: in.VenueID, Bookmarked: false}, nil
 }
 
 // findBookmark returns the user's bookmark for venueID, or nil if the venue is not bookmarked.

@@ -49,6 +49,7 @@ type Booking struct {
 
 type PlacePrediction struct {
 	Description string `json:"description"`
+	MainText    string `json:"main_text"`
 	PlaceID     string `json:"place_id"`
 
 	// Types are Google place types, e.g. "sublocality" or "transit_station" for areas and "establishment" for shops.

@@ -328,7 +328,7 @@ func TestSearchPlaceCandidates(t *testing.T) {
 	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/unisearch/v1/location/autocomplete":
-			io.WriteString(w, `{"data":{"predictions":[{"description":"Tokyo Chofu","place_id":"A"},{"description":"Tokyo, Japan","place_id":"B"}]}}`)
+			io.WriteString(w, `{"data":{"predictions":[{"description":"Tokyo Chofu","place_id":"A","types":["locality"]},{"description":"Tokyo, Japan","place_id":"B","types":["locality"]}]}}`)
 
 		case r.URL.Path == "/v1/me/profile":
 			io.WriteString(w, `{"id":5}`)
@@ -608,12 +608,17 @@ func TestListSlotsWholeVenue(t *testing.T) {
 	}
 }
 
-func TestListSlotsRefusesLargeVenue(t *testing.T) {
+func TestListSlotsLargeVenueReturnsChoices(t *testing.T) {
 	var requests []string
 	cs := connect(t, fakeSlotsAPI(t, maxVenueClasses+1, &requests))
 
-	if _, res := callTool[listSlotsOutput](t, cs, "list_slots", map[string]any{"venue_id": 1, "date": "2026-10-22"}); !res.IsError {
-		t.Error("expected error for a venue with too many classes")
+	out, res := callTool[listSlotsOutput](t, cs, "list_slots", map[string]any{"venue_id": 1, "date": "2026-10-22"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if len(out.ClassChoices) != maxVenueClasses+1 || len(out.Classes) != 0 || out.Note == "" {
+		t.Errorf("output = %+v", out)
 	}
 
 	if len(requests) != 0 {
@@ -720,6 +725,12 @@ func TestSearchClassesVenueNameAndHomeDefault(t *testing.T) {
 		case "/unisearch/v1/keyword/autocomplete":
 			io.WriteString(w, keywordsJSON)
 
+		case "/bff/v1/venue_offerings/282110":
+			w.WriteHeader(http.StatusNotFound)
+
+		case "/unisearch/v1/venues":
+			io.WriteString(w, `{"total_hits":4,"venues":[]}`)
+
 		case "/unisearch/v3/layout/search":
 			var body struct {
 				SearchRequest struct {
@@ -735,17 +746,17 @@ func TestSearchClassesVenueNameAndHomeDefault(t *testing.T) {
 		}
 	}))
 
-	// A venue name must not silently match the unrelated first activity.
-	_, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "B+TREE", "date": "2026-10-22"})
-	if !res.IsError {
-		t.Fatal("venue name query should fail")
+	// A venue name must not silently match the unrelated first activity; it is answered as a venue instead.
+	out, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "B+TREE", "date": "2026-10-22"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
 	}
 
-	if msg := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(msg, "282110") {
-		t.Errorf("error should point at the venue: %s", msg)
+	if len(out.MatchedVenues) != 1 || out.MatchedVenues[0].VenueID != 282110 || out.Note == "" || len(searched) != 0 {
+		t.Errorf("venue name output = %+v, searched = %v", out, searched)
 	}
 
-	out, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "massage", "date": "2026-10-22"})
+	out, res = callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "massage", "date": "2026-10-22"})
 	if res.IsError {
 		t.Fatalf("tool error: %v", res.Content)
 	}
@@ -756,6 +767,10 @@ func TestSearchClassesVenueNameAndHomeDefault(t *testing.T) {
 
 	if len(searched) != 1 || searched[0]["lat"] != 35.64 {
 		t.Errorf("searched = %v", searched)
+	}
+
+	if !strings.Contains(out.Note, "4 Massage venues") {
+		t.Errorf("empty result note = %q", out.Note)
 	}
 }
 
@@ -936,5 +951,142 @@ func TestEmbeddedLocationArgsInSchema(t *testing.T) {
 				t.Errorf("%s schema lacks %s: %s", tool.Name, p, b)
 			}
 		}
+	}
+}
+
+func TestGetVenueWithoutClassList(t *testing.T) {
+	cs := connect(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bff/v2/venue_detail/9":
+			io.WriteString(w, `{"items":[{"key":"header","header":{"title":"V"}}]}`)
+
+		case "/bff/v1/venue_offerings/9":
+			w.WriteHeader(http.StatusNotFound)
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	out, res := callTool[venueOutput](t, cs, "get_venue", map[string]any{"venue_id": 9})
+	if res.IsError || out.Name != "V" || len(out.Classes) != 0 || out.Note == "" {
+		t.Errorf("error = %v, output = %+v", res.IsError, out)
+	}
+
+	if _, res := callTool[listSlotsOutput](t, cs, "list_slots", map[string]any{"venue_id": 9, "date": "2026-10-22"}); !res.IsError {
+		t.Error("list_slots without class_id should explain the missing class list")
+	}
+}
+
+func TestSearchClassesSingleVenueSlots(t *testing.T) {
+	var requests []string
+	slots := fakeSlotsAPI(t, 1, &requests)
+	cs := connect(t, homeHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/unisearch/v1/keyword/autocomplete":
+			io.WriteString(w, `{"data":{"results":[{"type":"venues","entries":[{"id":1,"name":"Studio","distance":0.3}]}]}}`)
+
+		default:
+			slots(w, r)
+		}
+	}))
+
+	out, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "Studio", "date": "2026-10-22", "slots_per_class": 1})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if len(out.Venues) != 1 || out.Venues[0].VenueID != 1 || len(out.MatchedVenues) != 0 {
+		t.Fatalf("output = %+v", out)
+	}
+
+	if c := out.Venues[0].Classes; len(c) != 1 || !slices.Equal(slotIDs(c[0]), []int64{1}) {
+		t.Errorf("classes = %+v", c)
+	}
+}
+
+func TestActivitySuggestsTags(t *testing.T) {
+	cs := connect(t, homeHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bff/v1/tags":
+			io.WriteString(w, tagsJSON)
+
+		case "/unisearch/v1/keyword/autocomplete":
+			io.WriteString(w, `{"data":{"results":[]}}`)
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+
+	_, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"query": "drinks", "date": "2026-10-22"})
+	if !res.IsError {
+		t.Fatal("expected error")
+	}
+
+	if msg := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(msg, "Food and Drink (tag_id 16585)") {
+		t.Errorf("error should suggest the tag: %s", msg)
+	}
+}
+
+// fakeTokyoAPI serves place lookups where "Tokyo" matches only businesses, plus a home city of homeName.
+func fakeTokyoAPI(t *testing.T, homeName string, resolved *[]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/me/profile":
+			io.WriteString(w, `{"id":5}`)
+
+		case r.URL.Path == "/v1/gls/user/5/location":
+			io.WriteString(w, `{"location":{"name":"`+homeName+`","timezone":"Asia/Tokyo","centroid":{"latitude":35.64,"longitude":139.65}}}`)
+
+		case r.URL.Path == "/unisearch/v1/location/autocomplete":
+			io.WriteString(w, `{"data":{"predictions":[
+				{"description":"Keio Arena TOKYO, Chofu","main_text":"Keio Arena TOKYO","place_id":"ARENA","types":["stadium","establishment"]},
+				{"description":"Tokyo Tower, Minato","main_text":"Tokyo Tower","place_id":"TOWER","types":["tourist_attraction","establishment"]}]}}`)
+
+		case strings.HasPrefix(r.URL.Path, "/unisearch/v1/users/5/locations/"):
+			*resolved = append(*resolved, strings.TrimPrefix(r.URL.Path, "/unisearch/v1/users/5/locations/"))
+			io.WriteString(w, `{"data":{"location_history_item":{"formatted_address":"resolved","lat":35.6,"lon":139.7}}}`)
+
+		case r.URL.Path == "/unisearch/v3/layout/search":
+			io.WriteString(w, `{"nested_search":{"venues":[]}}`)
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}
+}
+
+func TestCityNameFallsBackToHome(t *testing.T) {
+	var resolved []string
+	cs := connect(t, fakeTokyoAPI(t, "Setagaya City, Tokyo, Japan", &resolved))
+
+	out, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"location": "Tokyo", "date": "2026-10-22"})
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+
+	if out.Location != "Setagaya City, Tokyo, Japan" || len(resolved) != 0 {
+		t.Errorf("location = %q, resolved = %v", out.Location, resolved)
+	}
+
+	// A landmark named exactly like the query is still accepted.
+	out, _ = callTool[searchOutput](t, cs, "search_classes", map[string]any{"location": "tokyo tower", "date": "2026-10-22"})
+	if !slices.Equal(resolved, []string{"TOWER"}) {
+		t.Errorf("landmark resolved = %v, output = %+v", resolved, out)
+	}
+}
+
+func TestCityNameRefusedOutsideHome(t *testing.T) {
+	var resolved []string
+	cs := connect(t, fakeTokyoAPI(t, "Berlin, Germany", &resolved))
+
+	_, res := callTool[searchOutput](t, cs, "search_classes", map[string]any{"location": "Tokyo", "date": "2026-10-22"})
+	if !res.IsError || len(resolved) != 0 {
+		t.Fatalf("error = %v, resolved = %v", res.IsError, resolved)
+	}
+
+	if msg := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(msg, "place_id ARENA") {
+		t.Errorf("error should list candidates: %s", msg)
 	}
 }

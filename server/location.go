@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/dvcrn/mcp-server-classpass/classpass"
 )
@@ -74,8 +76,13 @@ func baseCenter(ctx context.Context, cp *classpass.Client, a locationArgs) (cent
 			return center{}, err
 		}
 
-		placeID = candidates[0].PlaceID
-		c.Others = candidates[1:]
+		i := pickPlace(candidates, a.Location)
+		if i < 0 {
+			return homeOrRefuse(ctx, cp, a.Location, candidates)
+		}
+
+		placeID = candidates[i].PlaceID
+		c.Others = slices.Delete(slices.Clone(candidates), i, i+1)
 	}
 
 	uid, err := cp.UserID(ctx)
@@ -92,4 +99,24 @@ func baseCenter(ctx context.Context, cp *classpass.Client, a locationArgs) (cent
 	c.RadiusKm = max(c.RadiusKm, place.RadiusKm)
 
 	return c, nil
+}
+
+// homeOrRefuse handles a place name that only matched businesses. Bare city names do this (for "Tokyo", Google
+// suggests an arena and a mall), so the user's ClassPass city is used when its name contains the query.
+func homeOrRefuse(ctx context.Context, cp *classpass.Client, query string, candidates []placeCandidate) (center, error) {
+	if home, err := cp.HomeLocation(ctx); err == nil {
+		for _, part := range strings.Split(home.Name, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), strings.TrimSpace(query)) {
+				return center{Lat: home.Lat, Lon: home.Lon, RadiusKm: defaultRadiusKm, Name: home.Name, Others: candidates}, nil
+			}
+		}
+	}
+
+	var names []string
+	for _, c := range candidates {
+		names = append(names, fmt.Sprintf("%s (place_id %s)", c.Description, c.PlaceID))
+	}
+
+	return center{}, fmt.Errorf("%q only matched specific businesses, not an area: %s. "+
+		"Pass a ward or neighborhood as location, one of these as place_id, or lat and lon", query, strings.Join(names, "; "))
 }

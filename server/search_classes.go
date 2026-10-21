@@ -71,8 +71,11 @@ type searchOutput struct {
 	Date           string           `json:"date"`
 	EndDate        string           `json:"end_date,omitempty"`
 	Venues         []venue          `json:"venues"`
-	Cursor         string           `json:"cursor,omitempty"`
-	Note           string           `json:"note,omitempty"`
+
+	// MatchedVenues are venues named like the query when it is not an activity and matches several venues.
+	MatchedVenues []foundVenue `json:"matched_venues,omitempty"`
+	Cursor        string       `json:"cursor,omitempty"`
+	Note          string       `json:"note,omitempty"`
 }
 
 // searchCursor resumes a search: API is the upstream page cursor, Skip the venues of that page already returned.
@@ -134,6 +137,16 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 		RadiusKm:       c.RadiusKm,
 	}
 
+	days, err := dateRange(date, in.EndDate)
+	if err != nil {
+		return searchOutput{}, err
+	}
+
+	multiDay := len(days) > 1
+	if multiDay {
+		out.EndDate = days[len(days)-1]
+	}
+
 	switch {
 	case in.TagID != "":
 		tag, err := findTag(ctx, cp, in.TagID)
@@ -144,24 +157,20 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 		f.Activity = &classpass.Activity{ID: tag.ID, Name: tag.Name}
 
 	case in.Query != "":
-		f.Activity, err = resolveActivity(ctx, cp, in.Query, f.Lat, f.Lon)
+		m, err := resolveActivity(ctx, cp, in.Query, f.Lat, f.Lon)
 		if err != nil {
 			return searchOutput{}, err
 		}
+
+		if m.Activity == nil {
+			return searchVenueByName(ctx, cp, m.Venues, days, sf, out)
+		}
+
+		f.Activity = m.Activity
 	}
 
 	if f.Activity != nil {
 		out.Activity = f.Activity.Name
-	}
-
-	days, err := dateRange(date, in.EndDate)
-	if err != nil {
-		return searchOutput{}, err
-	}
-
-	multiDay := len(days) > 1
-	if multiDay {
-		out.EndDate = days[len(days)-1]
 	}
 
 	// Upstream cursors belong to one day's results, so a multi-day cursor only carries the skip count.
@@ -202,10 +211,88 @@ func search(ctx context.Context, cp *classpass.Client, in searchInput) (searchOu
 	}
 
 	if len(out.Venues) == 0 && out.Note == "" {
-		out.Note = "Nothing bookable matched. Try another date, a larger radius_km, a broader or no query, or looser filters."
-		if out.Cursor != "" {
-			out.Note = "Nothing matched on this page of results. Pass cursor to check the next page."
+		out.Note = emptyNote(ctx, cp, f, out.Cursor != "")
+	}
+
+	return out, nil
+}
+
+// emptyNote explains an empty result. With an activity it counts matching venues in range, so "closed or fully
+// booked" can be told apart from "none nearby".
+func emptyNote(ctx context.Context, cp *classpass.Client, f classpass.SearchFilters, morePages bool) string {
+	if morePages {
+		return "Nothing matched on this page of results. Pass cursor to check the next page."
+	}
+
+	generic := "Nothing bookable matched. Try another date, a larger radius_km, a broader or no query, or looser filters."
+	if f.Activity == nil {
+		return generic
+	}
+
+	page, err := cp.SearchVenues(ctx, classpass.VenueSearchFilters{
+		Lat: f.Lat, Lon: f.Lon, RadiusKm: f.RadiusKm, Date: f.Date, TagID: f.Activity.ID, Count: 1,
+	})
+	if err != nil {
+		return generic
+	}
+
+	if page.TotalHits == 0 {
+		return fmt.Sprintf("No %s venues within radius_km. Try a larger radius_km or another location.", f.Activity.Name)
+	}
+
+	return fmt.Sprintf("%d %s venues are within radius_km, but none has a bookable slot for these dates and filters; "+
+		"they may be closed or fully booked. search_venues lists them; try another date or time.", page.TotalHits, f.Activity.Name)
+}
+
+// searchVenueByName answers a query that names venues rather than an activity. A single match gets its slots
+// directly, the way list_slots would; several matches are returned for the caller to pick from.
+func searchVenueByName(ctx context.Context, cp *classpass.Client, matches []classpass.VenueMatch, days []string, sf slotFilter, out searchOutput) (searchOutput, error) {
+	for _, m := range matches {
+		out.MatchedVenues = append(out.MatchedVenues, foundVenue{
+			VenueID:    m.ID,
+			Name:       strings.TrimSpace(m.Name + " " + m.Subtitle),
+			DistanceKm: m.DistanceKm,
+		})
+	}
+
+	if len(matches) > 1 {
+		out.Note = "The query names venues rather than an activity. Pick one from matched_venues and call list_slots with its venue_id."
+		return out, nil
+	}
+
+	m := out.MatchedVenues[0]
+
+	offerings, err := cp.VenueOfferings(ctx, m.VenueID)
+	if errors.Is(err, classpass.ErrNotFound) {
+		out.Note = "The query names this venue, which does not publish a class list. Search near it by activity instead."
+		return out, nil
+	}
+
+	if err != nil {
+		return searchOutput{}, err
+	}
+
+	if len(offerings) > maxVenueClasses {
+		out.Note = fmt.Sprintf("The query names this venue, which has %d classes. Call list_slots with its venue_id to pick one.", len(offerings))
+		return out, nil
+	}
+
+	v := venue{VenueID: m.VenueID, Name: m.Name, DistanceKm: m.DistanceKm, Classes: []class{}}
+	for _, o := range offerings {
+		c, err := classSlots(ctx, cp, m.VenueID, o.ID, days[0], days[len(days)-1], sf)
+		if err != nil {
+			return searchOutput{}, err
 		}
+
+		if len(c.Slots) > 0 {
+			v.Classes = append(v.Classes, c)
+		}
+	}
+
+	out.MatchedVenues = nil
+	out.Venues = []venue{v}
+	if len(v.Classes) == 0 {
+		out.Note = "The query names this venue, but it has no bookable slots for these dates and filters."
 	}
 
 	return out, nil
@@ -244,32 +331,38 @@ func (sf slotFilter) keep(s classpass.Schedule, loc *time.Location) bool {
 	return true
 }
 
-// resolveActivity maps a query to an activity whose name matches it. ClassPass ranks unrelated activities first
-// for venue names (e.g. "Free" for "B+TREE"), so the first suggestion alone is not trusted.
-func resolveActivity(ctx context.Context, cp *classpass.Client, query string, lat, lon float64) (*classpass.Activity, error) {
+// activityMatch is what a free-text query resolved to: an activity, or else venues whose names match it.
+type activityMatch struct {
+	Activity *classpass.Activity
+	Venues   []classpass.VenueMatch
+}
+
+// resolveActivity maps a query to an activity whose name matches it, falling back to venues named like it.
+// ClassPass ranks unrelated activities first for venue names (e.g. "Free" for "B+TREE"), so the first activity
+// suggestion alone is not trusted.
+func resolveActivity(ctx context.Context, cp *classpass.Client, query string, lat, lon float64) (activityMatch, error) {
 	acts, venues, err := cp.Keywords(ctx, query, lat, lon)
 	if err != nil {
-		return nil, err
+		return activityMatch{}, err
 	}
 
 	q := strings.ToLower(strings.TrimSpace(query))
 	for i, a := range acts {
 		name := strings.ToLower(a.Name)
 		if name != "" && (strings.Contains(name, q) || strings.Contains(q, name)) {
-			return &acts[i], nil
+			return activityMatch{Activity: &acts[i]}, nil
 		}
 	}
 
 	if len(venues) > 0 {
-		var names []string
-		for _, v := range venues[:min(len(venues), 3)] {
-			names = append(names, fmt.Sprintf("%s (venue_id %d)", strings.TrimSpace(v.Name+" "+v.Subtitle), v.ID))
-		}
-
-		return nil, fmt.Errorf("%q is not an activity but matches venues: %s. Use list_slots or get_venue with a venue_id", query, strings.Join(names, ", "))
+		return activityMatch{Venues: venues}, nil
 	}
 
-	return nil, fmt.Errorf("no activity matches %q; try a broader term, or omit query to browse everything nearby", query)
+	if related := suggestTags(ctx, cp, query); len(related) > 0 {
+		return activityMatch{}, fmt.Errorf("no activity matches %q; related tags: %s. Pass one as tag_id", query, strings.Join(related, ", "))
+	}
+
+	return activityMatch{}, fmt.Errorf("no activity matches %q; try a broader term, see list_tags, or omit query to browse everything nearby", query)
 }
 
 // fetchVenues runs the search for each day and merges a venue's classes and slots across days. next is the

@@ -103,3 +103,49 @@ func findTag(ctx context.Context, cp *classpass.Client, id string) (*classpass.T
 
 	return t, nil
 }
+
+// suggestTags returns up to 5 tags sharing a word stem with query, e.g. "drinks" suggests Food and Drink.
+func suggestTags(ctx context.Context, cp *classpass.Client, query string) []string {
+	tags, err := cp.Tags(ctx)
+	if err != nil {
+		return nil
+	}
+
+	var related []string
+	var walk func([]classpass.Tag)
+	walk = func(ts []classpass.Tag) {
+		for _, t := range ts {
+			if len(related) == 5 {
+				return
+			}
+
+			if t.ID == marketingTagID {
+				continue
+			}
+
+			if sharesStem(query, t.Name) {
+				related = append(related, fmt.Sprintf("%s (tag_id %s)", t.Name, t.ID))
+			}
+
+			walk(t.Subtags)
+		}
+	}
+
+	walk(tags)
+
+	return related
+}
+
+// sharesStem reports whether a word of a is a prefix of a word of b or the reverse. Words under 4 letters are
+// ignored so "and" or "spa" do not match everything.
+func sharesStem(a, b string) bool {
+	for _, x := range strings.Fields(strings.ToLower(a)) {
+		for _, y := range strings.Fields(strings.ToLower(b)) {
+			if len(x) >= 4 && len(y) >= 4 && (strings.HasPrefix(x, y) || strings.HasPrefix(y, x)) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
