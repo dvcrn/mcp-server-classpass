@@ -2,8 +2,6 @@
 
 An MCP server for [ClassPass](https://classpass.com). It lets an AI assistant find classes, wellness appointments, and food near you, check prices and open times, and book or cancel with your credits.
 
-This is an unofficial project. It uses the private API of the ClassPass iOS app, which can change without notice.
-
 ## Tools
 
 | Tool | What it does |
@@ -39,8 +37,6 @@ With a token instead, the server never sees your password. The token is the valu
 "env": { "CLASSPASS_TOKEN": "your-token" }
 ```
 
-The token is the tested path; username and password login has not been tested against a live account yet.
-
 ## Install
 
 Pick one method and add its entry to `mcpServers` in your client configuration.
@@ -74,16 +70,10 @@ Then:
 }
 ```
 
-Clients that do not load your shell's `PATH` cannot find the binary by name. Use the full path from `which mcp-server-classpass` as `command` in that case.
-
 ### Binary
 
 Download the archive for your platform from the [GitHub releases](https://github.com/dvcrn/mcp-server-classpass/releases), extract it, and use the binary's full path as `command` in the entry above.
 
-## Things to know
-
-- `book_slot` and `cancel_reservation` act on your real account. Their descriptions tell the assistant to confirm with you first, and `book_slot` accepts `max_credits` so a booking fails if the price went up.
-- Searching by place name adds the place to your recent locations in the ClassPass app. Coordinates do not.
 
 ## Development
 
@@ -92,8 +82,6 @@ mise run build
 mise run test
 mise run lint
 ```
-
-Keep secrets in `fnox.local.toml`, which is gitignored. The included `.mcp.json` runs the server from source with `fnox exec -- go run .`.
 
 ## License
 
