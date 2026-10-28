@@ -4,7 +4,7 @@ An MCP server for [ClassPass](https://classpass.com). It lets an AI assistant fi
 
 Deploy this server directly to [MCP Nest](https://mcpnest.dev)
 
-<a href="https://mcpnest.dev/deploy?server=mcp-server-classpass&package-manager=npx&env[CLASSPASS_USERNAME]=&env[CLASSPASS_PASSWORD]=&env[CLASSPASS_TOKEN]=">
+<a href="https://mcpnest.dev/deploy?server=mcp-server-classpass&package-manager=npx&env[CLASSPASS_USERNAME]=&env[CLASSPASS_PASSWORD]=">
     <img src="https://mcpnest.dev/images/deploy-on-mcpnest.png" alt="Deploy on MCP Nest" height="32" />
   </a>
 
